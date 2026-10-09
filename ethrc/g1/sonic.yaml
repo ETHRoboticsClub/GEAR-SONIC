@@ -207,6 +207,9 @@ networks:
         - 0.8
       walk:
         code: 2
+        speed_m_s:
+        - 0.8
+        - 1.5
       run:
         code: 3
         speed_m_s:

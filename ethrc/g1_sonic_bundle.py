@@ -50,13 +50,14 @@ REPLAN_PERIOD_S = 1.0
 RUN_REPLAN_PERIOD_S = 0.1
 # localmotion_kplanner.hpp, PlannerConfig::default_height.
 DEFAULT_ROOT_HEIGHT_M = 0.78874
-# LocomotionMode codes (localmotion_kplanner.hpp) with the operator bounds
-# keyboard_handler.hpp clamps them to. Walk has no clamp: upstream sends -1, the
-# planner's own speed.
+# LocomotionMode codes (localmotion_kplanner.hpp) with the operator speed bounds
+# the gamepad input clamps them to (input_interface/gamepad.hpp:354-363; slow walk
+# and run match keyboard_handler.hpp:271-276). The planner's nominal walk band is
+# 0.8-2.5 m/s (localmotion_kplanner.hpp:81); the operator bound stops at 1.5.
 PLANNER_MODES = {
     "idle": {"code": 0},
     "slow_walk": {"code": 1, "speed_m_s": [0.2, 0.8]},
-    "walk": {"code": 2},
+    "walk": {"code": 2, "speed_m_s": [0.8, 1.5]},
     "run": {"code": 3, "speed_m_s": [1.5, 3.0], "replan_period_s": RUN_REPLAN_PERIOD_S},
     "squat": {"code": 4, "height_m": [0.2, 0.8]},
 }
