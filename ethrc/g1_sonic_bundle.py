@@ -1,5 +1,5 @@
-"""Write ethrc/g1/sonic.yaml: the sonic/v1 manifest that runs NVIDIA's released G1
-networks, unchanged, on the ETHRC controls stack.
+"""Write ethrc/g1/<variant>/sonic.yaml: the sonic/v1 manifests that run NVIDIA's
+released G1 networks, unchanged, on the ETHRC controls stack.
 
 The release on Hugging Face carries the networks and the observation config but not
 the joint data the deploy binary compiles in. That data is read here from
@@ -31,13 +31,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / "gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/policy_parameters.hpp"
-OUTPUT = ROOT / "ethrc/g1/sonic.yaml"
+OUTPUT_DIR = ROOT / "ethrc/g1"
 
 HF_REPOSITORY = "nvidia/GEAR-SONIC"
 HF_REVISION = "6733128a3d8a523b1418b06bca3cdf61c8b0987f"
-ENCODER = "sonic_v1_1/model_encoder.onnx"
-DECODER = "sonic_v1_1/model_decoder.onnx"
-OBSERVATION = "sonic_v1_1/observation_config.yaml"
+# The release's encoder/decoder variants, by their directory on the Hub (README
+# "Model variants"). They share the planner, joints and control rate.
+VARIANTS = ("sonic_v1_1", "low_latency")
 # deploy.sh's default planner (planner/target_vel/V2/), published at the release root.
 PLANNER = "planner_sonic.onnx"
 PLANNER_VERSION = 2
@@ -147,9 +147,15 @@ def joints(header: dict) -> tuple[list[dict], list[str], dict[str, list[str]]]:
     return entries, mujoco_names, subsets
 
 
+def files(variant: str) -> tuple[str, str, str]:
+    """The variant's encoder, decoder and observation config paths in the release."""
+    return (f"{variant}/model_encoder.onnx", f"{variant}/model_decoder.onnx",
+            f"{variant}/observation_config.yaml")
+
+
 def release_digests() -> dict[str, str]:
     """SHA-256 of each release file at HF_REVISION, as the Hub reports it."""
-    paths = [ENCODER, DECODER, PLANNER, OBSERVATION]
+    paths = [PLANNER] + [path for variant in VARIANTS for path in files(variant)]
     body = urllib.parse.urlencode([("paths", p) for p in paths] + [("expand", "true")])
     url = f"https://huggingface.co/api/models/{HF_REPOSITORY}/paths-info/{HF_REVISION}"
     with urllib.request.urlopen(url, data=body.encode(), timeout=60) as response:
@@ -167,7 +173,8 @@ def release_digests() -> dict[str, str]:
     return digests
 
 
-def manifest(urdf_sha256: str, digests: dict[str, str]) -> dict:
+def manifest(variant: str, urdf_sha256: str, digests: dict[str, str]) -> dict:
+    encoder, decoder, observation = files(variant)
     entries, planner_order, subsets = joints(parse_header(HEADER.read_text()))
     return {
         "schema": "sonic/v1",
@@ -177,8 +184,8 @@ def manifest(urdf_sha256: str, digests: dict[str, str]) -> dict:
         "control_period_s": CONTROL_PERIOD_S,
         "joints": entries,
         "networks": {
-            "encoder": {"file": ENCODER, "sha256": digests[ENCODER]},
-            "decoder": {"file": DECODER, "sha256": digests[DECODER]},
+            "encoder": {"file": encoder, "sha256": digests[encoder]},
+            "decoder": {"file": decoder, "sha256": digests[decoder]},
             "planner": {
                 "file": PLANNER,
                 "sha256": digests[PLANNER],
@@ -190,7 +197,7 @@ def manifest(urdf_sha256: str, digests: dict[str, str]) -> dict:
                 "modes": PLANNER_MODES,
             },
         },
-        "observation": {"file": OBSERVATION, "sha256": digests[OBSERVATION]},
+        "observation": {"file": observation, "sha256": digests[observation]},
         "encoder_modes": ENCODER_MODES,
         "joint_subsets": subsets,
     }
@@ -207,20 +214,24 @@ def main(argv=None) -> int:
     parser.add_argument("--urdf-sha256", required=True,
                         help="the controls repo's model identity for its G1 description")
     parser.add_argument("--check", action="store_true",
-                        help="fail if the committed manifest differs from a fresh one")
+                        help="fail if a committed manifest differs from a fresh one")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{64}", args.urdf_sha256):
         parser.error("--urdf-sha256 must be 64 lowercase hex digits")
-    text = render(manifest(args.urdf_sha256, release_digests()))
-    if args.check:
-        if not OUTPUT.is_file() or OUTPUT.read_text() != text:
-            print(f"{OUTPUT.relative_to(ROOT)} is stale; regenerate it", file=sys.stderr)
-            return 1
-        return 0
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(text)
-    print(f"wrote {OUTPUT.relative_to(ROOT)}")
-    return 0
+    digests = release_digests()
+    stale = 0
+    for variant in VARIANTS:
+        output = OUTPUT_DIR / variant / "sonic.yaml"
+        text = render(manifest(variant, args.urdf_sha256, digests))
+        if args.check:
+            if not output.is_file() or output.read_text() != text:
+                print(f"{output.relative_to(ROOT)} is stale; regenerate it", file=sys.stderr)
+                stale = 1
+            continue
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text)
+        print(f"wrote {output.relative_to(ROOT)}")
+    return stale
 
 
 if __name__ == "__main__":

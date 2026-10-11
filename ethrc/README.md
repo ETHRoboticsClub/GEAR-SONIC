@@ -8,9 +8,10 @@ at the pinned revision and placing the manifest beside them.
 
 | Bundle | Robot | Release |
 |---|---|---|
-| `g1/sonic.yaml` | Unitree G1 29-DoF | `nvidia/GEAR-SONIC` `sonic_v1_1`, planner V2 |
+| `g1/sonic_v1_1/sonic.yaml` | Unitree G1 29-DoF | `nvidia/GEAR-SONIC` `sonic_v1_1`, planner V2 |
+| `g1/low_latency/sonic.yaml` | Unitree G1 29-DoF | `nvidia/GEAR-SONIC` `low_latency` (4-frame SMPL lookahead), planner V2 |
 
-`g1/sonic.yaml` is generated from `policy_parameters.hpp`, which holds the joint
+The G1 manifests are generated from `policy_parameters.hpp`, which holds the joint
 order, default pose, action scales and gains the release does not carry:
 
 ```sh
