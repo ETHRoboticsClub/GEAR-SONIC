@@ -1,5 +1,8 @@
 # ETHRC bundles
 
+For the current PC/G1 network setup, Pico launch commands, stop controls, and
+troubleshooting, see [Pico teleoperation setup](pico_teleop_setup.md).
+
 `sonic/v1` manifests that run NVIDIA's released SONIC networks on the ETHRC
 controls stack (`docs/sonic.md` there). A manifest names the release's files by
 their paths on Hugging Face and binds them by SHA-256; the networks are never
