@@ -200,6 +200,8 @@ def manifest(variant: str, urdf_sha256: str, digests: dict[str, str]) -> dict:
         "observation": {"file": observation, "sha256": digests[observation]},
         "encoder_modes": ENCODER_MODES,
         "joint_subsets": subsets,
+        # The PICO teleop server streams planner commands and SMPL poses.
+        "teleop": True,
     }
 
 

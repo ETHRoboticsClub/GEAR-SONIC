@@ -249,3 +249,4 @@ joint_subsets:
   - right_wrist_pitch_joint
   - left_wrist_yaw_joint
   - right_wrist_yaw_joint
+teleop: true
