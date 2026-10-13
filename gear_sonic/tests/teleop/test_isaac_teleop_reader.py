@@ -192,3 +192,60 @@ def test_controllers_alone_advance_the_input_timestamp():
     )
     reader._update(pressed, T0 + 20 * MS)
     assert reader.get_input_timestamp_ns() == T0 + 20 * MS
+
+
+BAD_POSES = {
+    "nan position": ([np.nan, 1.0, 0.0], [0, 0, 0, 1]),
+    "inf quaternion": ([0.0, 1.0, 0.0], [0, np.inf, 0, 1]),
+    "zero quaternion": ([0.0, 1.0, 0.0], [0, 0, 0, 0]),
+    "non-unit quaternion": ([0.0, 1.0, 0.0], [0, 0, 0, 1.01]),
+}
+
+
+@pytest.mark.parametrize("position, quat", BAD_POSES.values(), ids=BAD_POSES.keys())
+def test_corrupt_device_poses_are_untracked(position, quat):
+    good = _quest()
+    reader = _reader()
+
+    head = fakes.raw(**{**good, "head": fakes.head([0, 1.6, 0])})
+    head["head"].pose = fakes.pose(position, quat)
+    reader._update(head, T0)
+    assert reader.get_tracking() == Tracking(controllers=True)
+
+    grip = _quest(offset=0.01)
+    grip["left_controller"].grip_pose.pose = fakes.pose(position, quat)
+    reader._update(grip, T0 + 10 * MS)
+    assert reader.get_tracking() == Tracking(head=True)
+    data = reader.get_controller_data()
+    assert data and not any(key.startswith("left") for key in data)
+
+    hands = fakes.raw(
+        head=fakes.head([0, 1.6, 0]),
+        left_hand=fakes.hand([-0.2, 1.0, -0.3]),
+        right_hand=fakes.hand([0.2, 1.0, -0.3]),
+    )
+    hands["right_hand"].joints.orientations[1] = np.asarray(quat, dtype=np.float32)
+    hands["right_hand"].joints.positions[1] = np.asarray(position, dtype=np.float32)
+    reader._update(hands, T0 + 20 * MS)
+    assert not reader.get_tracking().hands
+    assert reader.get_three_point_body() is None
+
+    orientations = np.tile(np.array([0, 0, 0, 1], dtype=np.float32), (24, 1))
+    positions = _body_positions()
+    orientations[3], positions[3] = quat, position
+    reader._update(fakes.raw(full_body=fakes.body(positions, orientations)), T0 + 30 * MS)
+    assert not reader.get_tracking().body
+
+
+def test_nan_in_an_invalid_joint_does_not_defeat_the_stale_guard():
+    positions = _body_positions()
+    valid = np.ones(24, dtype=np.uint8)
+    valid[22] = 0
+    positions[22] = np.nan  # an invalid joint may carry anything
+    frozen = fakes.raw(full_body=fakes.body(positions, valid=valid))
+    reader = _reader()
+
+    reader._update(frozen, T0)
+    assert reader.get_tracking().body
+    reader._update(frozen, T0 + 250 * MS)
+    assert not reader.get_tracking().body

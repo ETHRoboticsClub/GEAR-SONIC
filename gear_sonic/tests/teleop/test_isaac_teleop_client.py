@@ -215,3 +215,28 @@ def test_xsens_requires_plugin_and_address(client_module):
         module.IsaacTeleopClient(body_vendor="xsens", xsens_address="127.0.0.1")
     with pytest.raises(ValueError):
         module.IsaacTeleopClient(body_vendor="xsens", xsens_plugin="/bin/true")
+
+
+def test_plugin_that_died_after_it_was_ready_is_restarted_before_a_reopen(
+    client_module, monkeypatch, fake_plugin
+):
+    module, events = client_module
+    monkeypatch.setenv("CLOUDXR_EULA_ACCEPTED", "yes")
+    script, _ = fake_plugin
+    client = module.IsaacTeleopClient(
+        body_vendor="xsens", xsens_plugin=script, xsens_address="192.168.1.5"
+    )
+    client.start_runtime()
+    client.open_session(threading.Event())
+    first = client._xsens_proc
+
+    first.kill()
+    first.wait()
+    client.close_session()
+    client.open_session(threading.Event())
+
+    assert client._xsens_proc is not first
+    assert client._xsens_proc.poll() is None
+    assert client.has_session
+    client.close()
+    assert client._xsens_proc is None

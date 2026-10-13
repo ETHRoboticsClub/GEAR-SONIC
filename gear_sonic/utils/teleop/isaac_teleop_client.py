@@ -41,6 +41,15 @@ XSENS_PLUGIN_STOP_TIMEOUT_S = 5.0
 # Printed once the plugin's OpenXR session and collection exist.
 _XSENS_PLUGIN_READY_PREFIX = "listening on "
 
+# argv: parent pid, then the plugin command.
+_PDEATHSIG_EXEC = (
+    "import ctypes, os, signal, sys\n"
+    "ctypes.CDLL(None).prctl(1, signal.SIGTERM, 0, 0, 0)  # PR_SET_PDEATHSIG\n"
+    "if os.getppid() != int(sys.argv[1]):\n"
+    "    sys.exit(1)\n"
+    "os.execv(sys.argv[2], sys.argv[2:])\n"
+)
+
 CLOUDXR_EULA_ENV = "CLOUDXR_EULA_ACCEPTED"
 CLOUDXR_EULA_REFUSED_MESSAGE = "CloudXR EULA was not accepted"
 
@@ -183,23 +192,40 @@ class IsaacTeleopClient:
             f"--port={self._xsens_port}",
             f"--max-flatbuffer-size={XSENS_MAX_FLATBUFFER_SIZE}",
         ]
+        if sys.platform.startswith("linux"):
+            # The plugin dies with this process even when it is killed outright.
+            # Set after fork in a wrapper that execs the plugin (PDEATHSIG survives
+            # exec) rather than in preexec_fn, which is unsafe in a threaded process.
+            cmd = [sys.executable, "-c", _PDEATHSIG_EXEC, str(os.getpid()), *cmd]
         # The runtime's env file is how native processes find the runtime.
         env = {**os.environ, **read_exported_env(self._cloudxr_launcher.env_file)}
         print(f"Starting Xsens plugin: {' '.join(cmd)}", flush=True)
+        self._xsens_ready.clear()
         self._xsens_proc = subprocess.Popen(
             cmd, env=env, stdout=subprocess.PIPE, text=True, bufsize=1
         )
-        threading.Thread(target=self._forward_xsens_output, daemon=True).start()
+        threading.Thread(
+            target=self._forward_xsens_output, args=(self._xsens_proc,), daemon=True
+        ).start()
 
-    def _forward_xsens_output(self) -> None:
+    def _forward_xsens_output(self, proc: subprocess.Popen) -> None:
         """Relay plugin stdout (a pipe nobody else drains) and note when it is ready."""
-        for line in self._xsens_proc.stdout:
+        for line in proc.stdout:
             if line.startswith(_XSENS_PLUGIN_READY_PREFIX):
                 self._xsens_ready.set()
             print(f"[xsens_full_body_plugin] {line}", end="", flush=True)
 
     def _wait_for_xsens_plugin(self, stop_event: threading.Event) -> None:
         """Block until the plugin created its collection; a reader started first never sees it."""
+        code = self._xsens_proc.poll()
+        if code is not None and self._xsens_ready.is_set():
+            # It ran before, so its collection went away with it: start it again.
+            print(
+                f"IsaacTeleopClient: xsens_full_body_plugin exited with code {code}; restarting it.",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._start_xsens_plugin()
         while not self._xsens_ready.wait(0.1):
             if stop_event.is_set():
                 return

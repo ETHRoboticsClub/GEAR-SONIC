@@ -139,3 +139,22 @@ def decode(message: bytes, topic: bytes):
         offset += count * dtype.itemsize
     assert offset == len(message)
     return header, fields
+
+
+class FakeRobotModel:
+    """Stands in for the Pinocchio G1 model; FK comes from ``g1_key_frame_poses``."""
+
+    def get_configuration_from_actuated_joints(self, body_actuated_joint_values):
+        return body_actuated_joint_values
+
+
+def g1_key_frame_poses(robot_model, q=None):
+    """Fixed G1 wrist key frames (identity orientation, pelvis frame)."""
+    del robot_model, q
+    return {
+        f"{side}_wrist": {
+            "position": np.array([0.3, y, 0.1]),
+            "orientation_wxyz": np.array([1.0, 0, 0, 0]),
+        }
+        for side, y in (("left", 0.2), ("right", -0.2))
+    }

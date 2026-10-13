@@ -202,11 +202,29 @@ class _StaleGuard:
         if data is None:
             self._last = None
             return False, False
-        fresh = self._last is None or not np.array_equal(data, self._last)
+        # equal_nan: a NaN in an invalid body joint must not read as a new sample.
+        fresh = self._last is None or not np.array_equal(data, self._last, equal_nan=True)
         if fresh:
             self._last = data.copy()
             self._changed_ns = now_ns
         return fresh, now_ns - self._changed_ns <= INPUT_STALE_AFTER_S * 1e9
+
+
+# Runtimes normalize quaternions in float32 (error ~1e-7); a larger deviation is a
+# corrupt or uninitialized pose (e.g. an all-zero quaternion), not tracking.
+QUAT_NORM_TOLERANCE = 1e-3
+
+
+def _valid_poses(poses: np.ndarray) -> np.ndarray:
+    """Per row of ``[..., x, y, z, qx, qy, qz, qw]``: finite with a unit quaternion."""
+    finite = np.isfinite(poses).all(axis=-1)
+    with np.errstate(invalid="ignore"):
+        unit = np.abs(np.linalg.norm(poses[..., 3:7], axis=-1) - 1.0) <= QUAT_NORM_TOLERANCE
+    return finite & unit
+
+
+def _checked(pose: np.ndarray) -> np.ndarray | None:
+    return pose if _valid_poses(pose) else None
 
 
 def _pose7(pose: Any) -> np.ndarray:
@@ -223,7 +241,7 @@ def _body_joints(full_body: Any) -> tuple[np.ndarray, np.ndarray] | None:
     poses = np.concatenate(
         [np.asarray(joints.positions), np.asarray(joints.orientations)], axis=1
     ).astype(np.float32)
-    valid = np.asarray(joints.is_valid).astype(bool) & np.isfinite(poses).all(axis=1)
+    valid = np.asarray(joints.is_valid).astype(bool) & _valid_poses(poses)
     return poses, valid
 
 
@@ -240,7 +258,7 @@ def _controller_grip(snapshot: Any) -> np.ndarray | None:
     if grip is None or not grip.is_valid:
         return None
     pose = _pose7(grip.pose)
-    return pose if np.isfinite(pose).all() else None
+    return _checked(pose)
 
 
 def _hand_wrist(hand: Any) -> np.ndarray | None:
@@ -252,7 +270,7 @@ def _hand_wrist(hand: Any) -> np.ndarray | None:
     pose = np.concatenate(
         [joints.positions[_HAND_JOINT_WRIST], joints.orientations[_HAND_JOINT_WRIST]]
     ).astype(np.float64)
-    return pose if np.isfinite(pose).all() else None
+    return _checked(pose)
 
 
 def _controller_inputs_to_dict_side(snapshot: Any) -> dict[str, float]:
@@ -457,7 +475,7 @@ class IsaacTeleopReader:
             fresh_inputs |= body_tracked and body_fresh
 
         head = raw.get("head")
-        head_pose = _pose7(head.pose) if head is not None and head.is_tracked else None
+        head_pose = _checked(_pose7(head.pose)) if head is not None and head.is_tracked else None
         head_fresh, head_live = self._head_guard.update(head_pose, now_ns)
         head_tracked = head_pose is not None and head_live
 

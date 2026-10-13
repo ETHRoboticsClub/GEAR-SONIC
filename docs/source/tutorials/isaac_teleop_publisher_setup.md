@@ -121,7 +121,7 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 
 ### Mode requests from the robot side
 
-Operators without controllers select modes from the robot side: publish topic `mode_request` followed by msgpack `{"sequence": <int >= 1>, "mode": <StreamMode code>}` on the feedback socket (`--zmq_feedback_host`/`--zmq_feedback_port`). Each new sequence is applied once, stepping through the same transitions as the controller buttons; a mode that is not in `available_modes` is refused. `manager_state.applied_mode_request` reports the last sequence applied or refused. Stopping is done by stopping the streamer, not by a request.
+Operators without controllers select modes from the robot side: publish topic `mode_request` followed by msgpack `{"sequence": <int >= 1>, "mode": <StreamMode code>}` on the feedback socket (`--zmq_feedback_host`/`--zmq_feedback_port`). Each new sequence is applied once, stepping through the same transitions as the controller buttons but only through available modes and never through POSE on the way elsewhere; a request with no such path, or for a mode not in `available_modes`, is refused. A controller-button transition cancels a request still in progress. `manager_state.applied_mode_request` reports the last sequence applied or refused. Stopping is done by stopping the streamer, not by a request.
 
 ## Step 5: Connect the XR Client
 
