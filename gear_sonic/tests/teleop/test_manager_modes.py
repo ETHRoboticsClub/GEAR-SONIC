@@ -96,8 +96,8 @@ class FakePlannerStreamer:
     def __init__(self, calls):
         self.calls = calls
 
-    def calibrate_now(self, trigger):
-        self.calls.append(f"planner.calibrate_now({trigger})")
+    def calibrate_now(self):
+        self.calls.append("planner.calibrate_now")
 
     def reset_yaw(self):
         self.calls.append("planner.reset_yaw")
@@ -139,6 +139,11 @@ class Loop:
         self.reader.pressed = set()
         self.step()
 
+    def start(self):
+        """A+B+X+Y: the only way control starts."""
+        self.press("A", "B", "X", "Y")
+        assert self.mode == StreamMode.PLANNER
+
     @property
     def mode(self):
         return self.modes.current_mode
@@ -176,42 +181,65 @@ def test_available_modes(tracking, expected):
     assert server.available_modes(tracking) == expected
 
 
-def test_request_from_off_to_pose_steps_through_planner():
+def test_a_request_never_starts_control(capsys):
     loop = Loop()
-    loop.requests.send(1, StreamMode.POSE)
+    loop.step()
+    assert loop.manager_state()["available_modes"].shape == (0,)  # nothing in OFF
 
-    loop.step()
-    assert loop.mode == StreamMode.PLANNER
-    assert loop.switch_calls() == [
-        "planner.calibrate_now(a robot-side mode request)",
-        "planner.reset_yaw",
-    ]
-    assert loop.manager_state()["applied_mode_request"].tolist() == [0]
+    loop.requests.send(1, StreamMode.PLANNER)
+    loop.step(3)
 
-    loop.step()
-    assert loop.mode == StreamMode.POSE
-    loop.step()
+    assert loop.mode == StreamMode.OFF
+    assert loop.calls == [] and loop.commands() == []
     assert loop.manager_state()["applied_mode_request"].tolist() == [1]
-    assert loop.manager_state()["stream_mode"].tolist() == [StreamMode.POSE.value]
+    assert loop.manager_state()["available_modes"].shape == (0,)
+    assert "refused: control starts on the controllers (A+B+X+Y)" in capsys.readouterr().out
+
+    loop.start()
+    assert loop.switch_calls() == ["planner.calibrate_now", "planner.reset_yaw"]
+    assert loop.manager_state()["available_modes"].tolist() == [1, 2, 5]
+    loop.requests.send(2, StreamMode.POSE)  # the same kind of request now works
+    loop.step(2)
+    assert loop.mode == StreamMode.POSE
+    assert loop.modes.applied_mode_request == 2
     assert loop.commands() == [(1, 0, 1), (1, 0, 0)]
 
 
-def test_buttons_from_off_calibrate_as_before():
+def test_request_from_pose_to_vr3pt_steps_through_planner():
     loop = Loop()
-    loop.press("A", "B", "X", "Y")
+    loop.start()
+    loop.press("A", "X")
+    assert loop.mode == StreamMode.POSE
+    loop.calls.clear()
+    loop.requests.send(1, StreamMode.PLANNER_VR_3PT)
+
+    loop.step()
     assert loop.mode == StreamMode.PLANNER
-    assert loop.switch_calls()[0] == "planner.calibrate_now(the controller buttons)"
+    assert loop.manager_state()["applied_mode_request"].tolist() == [0]
+    loop.step()
+    assert loop.mode == StreamMode.PLANNER_VR_3PT
+    loop.step()
+    assert loop.manager_state()["applied_mode_request"].tolist() == [1]
+    assert loop.switch_calls() == [
+        "pose.on_mode_exit",
+        "planner.reset_yaw",
+        "planner.recalibrate_for_vr3pt",
+    ]
+    assert loop.commands()[-2:] == [(1, 0, 1), (1, 0, 1)]
 
 
 def test_request_for_an_unavailable_mode_is_refused():
     loop = Loop(tracking=Tracking(controllers=True))
+    loop.start()
+    commands, calls = loop.commands(), list(loop.calls)
     loop.requests.send(4, StreamMode.POSE)
 
     loop.step(3)
 
-    assert loop.mode == StreamMode.OFF
+    assert loop.mode == StreamMode.PLANNER
     assert loop.manager_state()["applied_mode_request"].tolist() == [4]
-    assert loop.calls == [] and loop.commands() == []
+    assert loop.switch_calls() == [c for c in calls if "run_once" not in c]
+    assert loop.commands() == commands
 
 
 @pytest.mark.parametrize(
@@ -225,8 +253,7 @@ def test_request_for_an_unavailable_mode_is_refused():
 )
 def test_modes_outside_the_request_contract_are_refused(mode):
     loop = Loop()
-    loop.requests.send(1, StreamMode.PLANNER)
-    loop.step(2)
+    loop.start()
     loop.requests.send(2, mode)
 
     loop.step(2)
@@ -238,11 +265,13 @@ def test_modes_outside_the_request_contract_are_refused(mode):
 
 def test_target_lost_midway_is_refused_where_the_steps_stopped():
     loop = Loop()
-    loop.requests.send(1, StreamMode.POSE)
+    loop.start()
+    loop.press("A", "X")
+    loop.requests.send(1, StreamMode.PLANNER_VR_3PT)
     loop.step()
     assert loop.mode == StreamMode.PLANNER
 
-    loop.reader.tracking = HEADSET  # body tracking dropped
+    loop.reader.tracking = Tracking(controllers=True)  # VR 3PT no longer available
     loop.step(2)
 
     assert loop.mode == StreamMode.PLANNER
@@ -251,7 +280,8 @@ def test_target_lost_midway_is_refused_where_the_steps_stopped():
 
 def test_resent_request_is_applied_once():
     loop = Loop()
-    loop.requests.send(7, StreamMode.PLANNER)
+    loop.start()
+    loop.requests.send(7, StreamMode.PLANNER_VR_3PT)
     loop.step(2)
     assert loop.modes.applied_mode_request == 7
     loop.press("A", "X")  # the operator moves on to POSE
@@ -259,7 +289,7 @@ def test_resent_request_is_applied_once():
     commands = loop.commands()
 
     for _ in range(3):  # the robot keeps resending sequence 7
-        loop.requests.send(7, StreamMode.PLANNER)
+        loop.requests.send(7, StreamMode.PLANNER_VR_3PT)
         loop.step()
 
     assert loop.mode == StreamMode.POSE
@@ -272,8 +302,7 @@ def test_resent_request_is_applied_once():
 
 def test_planner_vr3pt_round_trip_uses_the_button_side_effects():
     loop = Loop()
-    loop.requests.send(1, StreamMode.PLANNER)
-    loop.step(2)
+    loop.start()
     loop.calls.clear()
 
     loop.requests.send(2, StreamMode.PLANNER_VR_3PT)
@@ -320,7 +349,8 @@ def test_requests_never_pass_through_pose(tracking, in_vr3pt):
 def test_no_request_produces_back_to_back_opposite_commands():
     for tracking in (BODY, HEADSET, Tracking(head=True, hands=True), Tracking(controllers=True)):
         available = server.available_modes(tracking)
-        for start in set(StreamMode) - {StreamMode.POSE_PAUSE}:  # PAUSE is held by a button
+        # Post-start modes only; POSE_PAUSE is held by a button.
+        for start in set(StreamMode) - {StreamMode.OFF, StreamMode.POSE_PAUSE}:
             for target in available:
                 loop = Loop(tracking=tracking)
                 loop.modes.current_mode = start
@@ -334,23 +364,26 @@ def test_no_request_produces_back_to_back_opposite_commands():
 
 def test_buttons_cancel_a_queued_request(capsys):
     loop = Loop()
-    loop.requests.send(3, StreamMode.POSE)
+    loop.start()
+    loop.press("A", "X")
+    loop.requests.send(3, StreamMode.PLANNER_VR_3PT)
     loop.step()
-    assert loop.mode == StreamMode.PLANNER  # first hop of OFF -> POSE
+    assert loop.mode == StreamMode.PLANNER  # first hop of POSE -> VR 3PT
 
-    loop.press("click")  # the operator enters VR 3PT before the request finished
+    loop.press("A", "X")  # the operator goes back to POSE before the request finished
 
-    assert loop.mode == StreamMode.PLANNER_VR_3PT
+    assert loop.mode == StreamMode.POSE
     assert loop.modes.applied_mode_request == 3
     assert "buttons took over" in capsys.readouterr().out
     loop.step(3)
-    assert loop.mode == StreamMode.PLANNER_VR_3PT
+    assert loop.mode == StreamMode.POSE
 
 
 def test_manager_state_reports_tracking_available_modes_and_applied_request():
     loop = Loop(tracking=HEADSET)
+    loop.start()
     loop.requests.send(5, StreamMode.PLANNER)
-    loop.step(2)
+    loop.step()
 
     header, _ = fakes.decode(loop.socket.sent[-1], b"manager_state")
     fields = loop.manager_state()
@@ -460,20 +493,26 @@ def test_planner_sends_on_controller_input_alone(planner):
     assert len(socket.sent) == 2
 
 
-def test_request_from_off_logs_the_calibration_trigger(planner, capsys):
+def test_only_the_buttons_calibrate(planner):
     reader = ScriptedReader(HEADSET)
     reader.three_point = ("headset", _headset_body(heading_deg=0.0))
-    loop = Loop(reader=reader, planner=planner(reader))
+    streamer = planner(reader)
+    loop = Loop(reader=reader, planner=streamer)
+
     loop.requests.send(1, StreamMode.PLANNER)
+    loop.step(2)
+    assert not streamer.three_point.is_calibrated
+    assert loop.commands() == []
 
-    loop.step()
-
-    assert "3-point calibration captured on a robot-side mode request" in capsys.readouterr().out
+    loop.start()
+    assert streamer.three_point.is_calibrated
+    assert streamer.three_point_source == "headset"
 
 
 def test_vr3pt_without_three_point_input_still_sends_locomotion(planner):
     reader = ScriptedReader(HEADSET)
     loop = Loop(reader=reader, planner=planner(reader))
+    loop.start()
     loop.requests.send(1, StreamMode.PLANNER_VR_3PT)
     loop.step(2)
     assert loop.mode == StreamMode.PLANNER_VR_3PT
@@ -579,9 +618,10 @@ def test_corrupt_poses_never_reach_the_three_point_pipeline(
     reader = IsaacTeleopReader(client=fakes.FakeClient())
     loop = Loop(reader=reader, planner=planner(reader))
 
-    def poll(t, corrupt):
+    def poll(t, corrupt, start=False):
+        clicks = dict(primary_click=start, secondary_click=start)  # A+B / X+Y
         head = fakes.head([0.0, 1.6 + t, 0.0])
-        right = fakes.controller([0.2, 1.0 + t, -0.3])
+        right = fakes.controller([0.2, 1.0 + t, -0.3], **clicks)
         if corrupt and bad_head is not None:
             head = fakes.head(bad_head[:3])
             head.pose = fakes.pose(bad_head[:3], bad_head[3:])
@@ -590,18 +630,24 @@ def test_corrupt_poses_never_reach_the_three_point_pipeline(
         reader._update(
             fakes.raw(
                 head=head,
-                left_controller=fakes.controller([-0.2, 1.0 + t, -0.3]),
+                left_controller=fakes.controller([-0.2, 1.0 + t, -0.3], **clicks),
                 right_controller=right,
             ),
             T0 + int(t * 1e9),
         )
 
-    poll(0.0, corrupt=True)
-    assert not reader.get_tracking().head or not reader.get_tracking().controllers
-    assert reader.get_three_point_body() is None
-    loop.requests.send(1, StreamMode.PLANNER)
-    loop.step(2)  # OFF -> PLANNER calibrates from nothing rather than from the bad pose
+    # A corrupt grip drops that controller's buttons, so only a corrupt head can be
+    # present while A+B+X+Y starts control.
+    start_corrupt = bad_head is not None
+    poll(0.0, corrupt=start_corrupt, start=True)
+    if start_corrupt:
+        assert not reader.get_tracking().head
+        assert reader.get_three_point_body() is None
+    loop.step()  # OFF -> PLANNER calibrates from nothing rather than from the bad pose
     assert loop.mode == StreamMode.PLANNER
+    seen.clear()
+    poll(0.0002, corrupt=True)
+    loop.step()
     loop.requests.send(2, StreamMode.PLANNER_VR_3PT)
     loop.step(2)
     assert loop.mode == StreamMode.PLANNER  # VR 3PT is not available

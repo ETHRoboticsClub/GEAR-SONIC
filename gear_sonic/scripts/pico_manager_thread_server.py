@@ -1802,16 +1802,14 @@ class PlannerStreamer:
             )
             self.three_point.reset_with_measured_q(np.zeros(29, dtype=np.float64))
 
-    def calibrate_now(self, trigger: str) -> None:
-        """Calibrate the 3-point pose against the G1 zero pose from the current input;
-        ``trigger`` names what confirmed the operator stands in that pose."""
+    def calibrate_now(self) -> None:
+        """Calibrate the 3-point pose against the G1 zero pose from the current input."""
         three_point_body = self.reader.get_three_point_body()
         if three_point_body is None:
-            print(f"[Manager] WARNING: No 3-point input available for calibration on {trigger}")
+            print("[Manager] WARNING: No 3-point input available for calibration")
             return
         self.three_point_source, body = three_point_body
-        if self.three_point.calibrate_now(body):
-            print(f"[Manager] 3-point calibration captured on {trigger} ({self.three_point_source})")
+        self.three_point.calibrate_now(body)
 
     def _check_three_point_source(self, source: str) -> None:
         """Body and headset inputs differ in pelvis, neck and wrist frames, so a
@@ -1977,10 +1975,9 @@ def available_modes(tracking: input_readers.Tracking) -> list[StreamMode]:
 
 
 # Button transitions a mode request may step through (the state machine in
-# run_pico_manager without its OFF and POSE_PAUSE entries). PLANNER_VR_3PT also
-# returns to the mode it was entered from.
+# run_pico_manager without its OFF and POSE_PAUSE entries; requests never leave
+# OFF). PLANNER_VR_3PT also returns to the mode it was entered from.
 _MODE_HOPS = {
-    StreamMode.OFF: (StreamMode.PLANNER,),
     StreamMode.PLANNER: (StreamMode.POSE, StreamMode.PLANNER_VR_3PT),
     StreamMode.POSE: (StreamMode.PLANNER, StreamMode.PLANNER_FROZEN_UPPER_BODY),
     StreamMode.PLANNER_FROZEN_UPPER_BODY: (StreamMode.POSE, StreamMode.PLANNER_VR_3PT),
@@ -2168,17 +2165,14 @@ class StreamModeManager:
         # Robot-side mode requests move one hop per iteration when the buttons did
         # not; a button transition cancels the queued request.
         tracking = reader.get_tracking()
-        available = available_modes(tracking)
         self.receive_mode_request(mode_requests.poll())
-        requested = False
         if new_mode != current_mode:
             self.cancel_mode_request()
         else:
-            new_mode = self.mode_request_hop(available)
-            requested = new_mode != current_mode
+            new_mode = self.mode_request_hop(self.requestable_modes(tracking))
 
         if new_mode != current_mode:
-            self.begin_switch(new_mode, requested=requested)
+            self.begin_switch(new_mode)
 
         # Run one iteration of the new mode
         if new_mode == StreamMode.POSE:
@@ -2200,24 +2194,31 @@ class StreamModeManager:
         toggle_da = toggle_da_tmp and not self._prev_toggle_da
         self._prev_toggle_dc = toggle_dc_tmp
         self._prev_toggle_da = toggle_da_tmp
-        self.socket.send(self.manager_state_message(toggle_dc, toggle_da, tracking, available))
+        self.socket.send(
+            self.manager_state_message(
+                toggle_dc, toggle_da, tracking, self.requestable_modes(tracking)
+            )
+        )
 
         self._prev_ax_pressed = ax_pressed
         self._prev_by_pressed = by_pressed
         self._prev_start_combo = start_combo
         self._prev_left_axis_click = left_axis_click
 
-    def begin_switch(self, new_mode: StreamMode, requested: bool = False) -> None:
-        """Side effects before the first iteration in ``new_mode``; ``requested`` when a
-        robot-side mode request, not the controller buttons, asked for it."""
+    def requestable_modes(self, tracking: input_readers.Tracking) -> list[StreamMode]:
+        """Modes a robot-side request may target now: none in OFF, because control
+        starts only on A+B+X+Y, the operator's declaration of the calibration pose."""
+        if self.current_mode == StreamMode.OFF:
+            return []
+        return available_modes(tracking)
+
+    def begin_switch(self, new_mode: StreamMode) -> None:
+        """Side effects before the first iteration in ``new_mode``."""
         current_mode = self.current_mode
         if current_mode == StreamMode.OFF and new_mode == StreamMode.PLANNER:
             # Calibrate VR 3pt tracking NOW: operator should be in zero-ref pose.
-            # Uses the current 3-point input + FK of all-zero body joints. A request
-            # from OFF is the operator's confirmation of that pose, like A+B+X+Y.
-            self.planner_streamer.calibrate_now(
-                "a robot-side mode request" if requested else "the controller buttons"
-            )
+            # Uses the current 3-point input + FK of all-zero body joints.
+            self.planner_streamer.calibrate_now()
 
         if current_mode == StreamMode.POSE:
             self.pose_streamer.on_mode_exit()
@@ -2287,6 +2288,14 @@ class StreamModeManager:
         records the request as applied."""
         request = self._mode_request
         if request is None:
+            return self.current_mode
+        if self.current_mode == StreamMode.OFF:
+            print(
+                f"[Manager] Mode request {request['sequence']} refused: "
+                "control starts on the controllers (A+B+X+Y)"
+            )
+            self.applied_mode_request = request["sequence"]
+            self._mode_request = None
             return self.current_mode
         target = next((m for m in StreamMode if m.value == request["mode"]), None)
         if target in available and target != self.current_mode:

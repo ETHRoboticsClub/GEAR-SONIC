@@ -98,7 +98,7 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 
 The streamer starts its CloudXR runtime and publishes `manager_state` immediately; it does not wait for any device. It logs `Isaac Teleop session initialized.` once a headset has connected (Step 5).
 
-Any Isaac Teleop input works; `manager_state` reports what is tracked (`tracking`: body, head, controllers, hands) and which modes a robot-side mode request may select (`available_modes`):
+Any Isaac Teleop input works; `manager_state` reports what is tracked (`tracking`: body, head, controllers, hands) and which modes a robot-side mode request may select (`available_modes`, empty until A+B+X+Y started control):
 
 | Input | Modes |
 |---|---|
@@ -121,7 +121,7 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 
 ### Mode requests from the robot side
 
-Operators without controllers select modes from the robot side: publish topic `mode_request` followed by msgpack `{"sequence": <int >= 1>, "mode": <StreamMode code>}` on the feedback socket (`--zmq_feedback_host`/`--zmq_feedback_port`). Each new sequence is applied once, stepping through the same transitions as the controller buttons but only through available modes and never through POSE on the way elsewhere; a request with no such path, or for a mode not in `available_modes`, is refused. A controller-button transition cancels a request still in progress. `manager_state.applied_mode_request` reports the last sequence applied or refused. Stopping is done by stopping the streamer, not by a request.
+The robot side can select modes (e.g. from a dashboard): publish topic `mode_request` followed by msgpack `{"sequence": <int >= 1>, "mode": <StreamMode code>}` on the feedback socket (`--zmq_feedback_host`/`--zmq_feedback_port`). A request never starts control: teleop starts only on **A+B+X+Y**, the operator's declaration of the calibration pose, so `available_modes` is empty while the stream mode is OFF and a request received then is refused. Once control has started, each new sequence is applied once, stepping through the same transitions as the controller buttons but only through available modes and never through POSE on the way elsewhere; a request with no such path, or for a mode not in `available_modes`, is refused. A controller-button transition cancels a request still in progress. `manager_state.applied_mode_request` reports the last sequence applied or refused. Stopping is done by stopping the streamer, not by a request.
 
 ## Step 5: Connect the XR Client
 
