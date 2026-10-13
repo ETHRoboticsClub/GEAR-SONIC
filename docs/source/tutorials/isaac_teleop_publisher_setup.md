@@ -1,6 +1,6 @@
 # Isaac Teleop Setup (CloudXR / DeviceIO, in-process)
 
-This page documents the Isaac Teleop / CloudXR bring-up for **G1 with a Thor backpack** that drives `GR00T-WholeBodyControl` directly from the headset. Using `pico_manager_thread_server.py --input-source isaac-teleop`, the CloudXR runtime is hosted **in-process** via the `isaacteleop[cloudxr]` Python package.
+This page documents the Isaac Teleop / CloudXR bring-up for **G1 with a Thor backpack** that drives `GR00T-WholeBodyControl` directly from the headset. Using `pico_manager_thread_server.py --input-source isaac-teleop`, the CloudXR runtime is owned by the streamer process via the `isaaccapture[cloudxr]` Python package: it starts with the streamer and stops when the streamer exits.
 
 ```{admonition} Scope
 :class: important
@@ -15,7 +15,7 @@ Real-robot deployment is supported only on **G1 + Thor backpack**. Sim2Sim (MuJo
 This page is a condensed, repo-specific version of the upstream [Isaac Teleop](https://nvidia.github.io/IsaacTeleop/) docs:
 
 - [Quick Start](https://nvidia.github.io/IsaacTeleop/main/getting_started/quick_start.html)
-- [`isaacteleop[cloudxr]` Python API](https://nvidia.github.io/IsaacTeleop/main/)
+- [`isaaccapture[cloudxr]` Python API](https://nvidia.github.io/IsaacTeleop/main/)
 
 ## Step 1: Prepare the Thor Host
 
@@ -43,21 +43,23 @@ Optional thermal / over-current check:
 cat /sys/class/hwmon/hwmon*/oc*_event_cnt
 ```
 
-## Step 2: Confirm `isaacteleop[cloudxr]` Installed
+## Step 2: Confirm `isaaccapture[cloudxr]` Installed
 
 ```{note}
-This step is a checkpoint, not a new action. `install_pico.sh`, run during [VR Teleop Setup](../getting_started/vr_teleop_setup.md) Step 3, already installs `isaacteleop[cloudxr]`. If that step is complete, skip to Step 3 below; otherwise, complete it before continuing.
+This step is a checkpoint, not a new action. `install_pico.sh`, run during [VR Teleop Setup](../getting_started/vr_teleop_setup.md) Step 3, already installs `isaaccapture[cloudxr]` (Python 3.11 or newer). If that step is complete, skip to Step 3 below; otherwise, complete it before continuing.
 ```
 
 For reference, `install_pico.sh` installs the package from the public NVIDIA index:
 
 ```bash
 # Already wired into install_pico.sh; shown here for reference
-uv pip install 'isaacteleop[cloudxr]~=1.3.0' --prerelease=allow \
+uv pip install 'isaaccapture[cloudxr]==1.7.6rc1' --prerelease=allow \
     --extra-index-url https://pypi.nvidia.com
 ```
 
 It also seeds `~/cloudxr.env` with `NV_DEVICE_PROFILE=Quest3` (override by editing the file). `CloudXRLauncher` reads this on startup.
+
+The streamer accepts the [NVIDIA CloudXR EULA](https://nvidia.github.io/IsaacTeleop/main/) only when `CLOUDXR_EULA_ACCEPTED=yes` is set in its environment; otherwise it exits with `CloudXR EULA was not accepted`.
 
 ## Step 3: Start the C++ Deployment
 
@@ -86,6 +88,7 @@ From the **repo root**:
 
 ```bash
 source .venv_teleop/bin/activate
+export CLOUDXR_EULA_ACCEPTED=yes
 python gear_sonic/scripts/pico_manager_thread_server.py --manager \
     --input-source isaac-teleop
 
@@ -93,11 +96,36 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 #   --vis_vr3pt --vis_smpl
 ```
 
-On startup the streamer brings up the in-process CloudXR runtime and logs `Isaac Teleop session initialized.`, then repeats `waiting for Isaac Teleop body data (connect the headset to CloudXR)...` until you connect the client in Step 5.
+The streamer starts its CloudXR runtime and publishes `manager_state` immediately; it does not wait for any device. It logs `Isaac Teleop session initialized.` once a headset has connected (Step 5).
+
+Any Isaac Teleop input works; `manager_state` reports what is tracked (`tracking`: body, head, controllers, hands) and which modes a robot-side mode request may select (`available_modes`):
+
+| Input | Modes |
+|---|---|
+| Full-body tracking (PICO trackers or Xsens) | POSE, PLANNER, PLANNER_VR_3PT |
+| Headset + controllers (e.g. Quest) or headset + hand tracking (e.g. Vision Pro) | PLANNER, PLANNER_VR_3PT (wrists from the controllers or hands, torso heading from the head) |
+| Controllers, headset or hands alone | PLANNER |
+
+### Xsens MVN body tracking
+
+With an Xsens suit, the streamer also runs Isaac Teleop's `xsens_full_body_plugin`, which receives MVN Studio's "Isaac Teleop" network stream:
+
+```bash
+python gear_sonic/scripts/pico_manager_thread_server.py --manager \
+    --input-source isaac-teleop --body-vendor xsens \
+    --xsens-plugin /path/to/xsens_full_body_plugin \
+    --xsens-address <IPv4 of the interface the MVN PC reaches>
+```
+
+`--xsens-plugin` defaults to `$ISAAC_TELEOP_XSENS_PLUGIN`, `--xsens-port` to 9764. The UDP stream carries no authentication, so bind the one interface the MVN PC reaches rather than `0.0.0.0`.
+
+### Mode requests from the robot side
+
+Operators without controllers select modes from the robot side: publish topic `mode_request` followed by msgpack `{"sequence": <int >= 1>, "mode": <StreamMode code>}` on the feedback socket (`--zmq_feedback_host`/`--zmq_feedback_port`). Each new sequence is applied once, stepping through the same transitions as the controller buttons; a mode that is not in `available_modes` is refused. `manager_state.applied_mode_request` reports the last sequence applied or refused. Stopping is done by stopping the streamer, not by a request.
 
 ## Step 5: Connect the XR Client
 
-Connecting the client starts the body-data stream the streamer is waiting for.
+Connecting the client starts the headset, controller, hand and body tracking streams.
 
 - Open the [Isaac Teleop Web Client](https://nvidia.github.io/IsaacTeleop/client/) in the headset browser
 - Enter the IP address of the host running the streamer
@@ -183,15 +211,19 @@ rm -rf build
 just build
 ```
 
-### `isaacteleop` import error
+### `isaaccapture` import error
 
-Re-run `install_pico.sh` to reinstall `isaacteleop[cloudxr]~=1.3.0` into `.venv_teleop`. If `pypi.nvidia.com` is unreachable, check your network and the `--extra-index-url` flag.
+Re-run `install_pico.sh` to reinstall `isaaccapture[cloudxr]==1.7.6rc1` into `.venv_teleop`. If `pypi.nvidia.com` is unreachable, check your network and the `--extra-index-url` flag.
+
+### A CloudXR runtime is already serving
+
+The streamer owns its runtime and refuses to start beside another one. Stop the other runtime (`python -m isaaccapture.cloudxr.service stop`, or the other streamer) and restart.
 
 ### Body data not arriving
 
-The streamer logs `[IsaacTeleopReader] No DeviceIO data for 5.0s, flagging disconnect` if the headset stops feeding body data. Confirm:
+The streamer logs `[IsaacTeleopReader] Tracking: ...` whenever tracking changes. A body counts as tracked only while all 24 joints are valid and its pose keeps changing; a pose that stays bit-identical for 0.2 s (a stopped MVN stream, a disconnected headset) is not tracked. Confirm:
 
 1. The headset is still connected to CloudXR (Step 5).
 2. The Pico body trackers are paired and calibrated (see [VR Teleop Setup → Motion Tracker Setup](../getting_started/vr_teleop_setup.md)).
-3. The first time the schema runs, watch for `[IsaacTeleopReader] Unrecognised body_data schema: type=...` — if you see it, the upstream `FullBodyTrackerPico.get_body_pose().data` shape changed and `_body_data_to_24x7()` in `gear_sonic/utils/teleop/input_readers.py` needs an extra branch for the new layout.
+3. For Xsens, the plugin's `delivered=` counter keeps climbing; if not, see the plugin's user guide in the Isaac Teleop repository (`src/plugins/xsens_full_body/USER_GUIDE.md`).
 

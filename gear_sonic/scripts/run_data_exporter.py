@@ -147,6 +147,7 @@ def unpack_pose_message(packed_data: bytes, topic: str = "pose") -> dict:
         "f64": np.float64,
         "i32": np.int32,
         "i64": np.int64,
+        "u8": np.uint8,
         "bool": bool,
     }
 

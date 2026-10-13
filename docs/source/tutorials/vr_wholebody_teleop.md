@@ -15,7 +15,7 @@ mode, including a successful ground pickup.
 
 ```{admonition} Isaac Teleop / CloudXR Scope
 :class: note
-The same `zmq_manager` workflow can also drive the headset through Isaac Teleop / CloudXR by launching `gear_sonic/scripts/pico_manager_thread_server.py --input-source isaac-teleop`. The streamer hosts the CloudXR runtime in-process via `isaacteleop[cloudxr]` — no separate publisher container required. That path is currently supported only for **G1 with a Thor backpack**; a regular G1 setup is not supported yet.
+The same `zmq_manager` workflow can also drive the headset through Isaac Teleop / CloudXR by launching `gear_sonic/scripts/pico_manager_thread_server.py --input-source isaac-teleop`. The streamer hosts the CloudXR runtime in-process via `isaaccapture[cloudxr]` — no separate publisher container required. That path is currently supported only for **G1 with a Thor backpack**; a regular G1 setup is not supported yet.
 ```
 
 ```{admonition} Safety Warning
@@ -33,7 +33,7 @@ You **must wear tight-fitting pants or leggings** to guarantee line-of-sight for
 ## Prerequisites
 
 1. **Completed the [Quick Start](../getting_started/quickstart.md)** — you can run the sim2sim loop (includes [installing the deployment](../getting_started/installation_deploy.md) and [downloading model checkpoints](../getting_started/download_models.md)).
-2. **Completed the [VR Teleop Setup](../getting_started/vr_teleop_setup.md)** — `.venv_teleop` is ready. For the default path, PICO hardware is installed, calibrated, and connected. For Isaac Teleop / CloudXR, the `isaacteleop[cloudxr]` package is also installed (handled by `install_pico.sh`) and the headset connects to the in-process CloudXR runtime — see [Isaac Teleop Setup](isaac_teleop_publisher_setup.md).
+2. **Completed the [VR Teleop Setup](../getting_started/vr_teleop_setup.md)** — `.venv_teleop` is ready. For the default path, PICO hardware is installed, calibrated, and connected. For Isaac Teleop / CloudXR, the `isaaccapture[cloudxr]` package is also installed (handled by `install_pico.sh`) and the headset connects to the in-process CloudXR runtime — see [Isaac Teleop Setup](isaac_teleop_publisher_setup.md).
 
 ---
 
@@ -97,7 +97,7 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 # python gear_sonic/scripts/pico_manager_thread_server.py --manager
 ```
 
-**Isaac Teleop / CloudXR alternative** (**G1 + Thor backpack only**) — connects the headset over CloudXR (no XRoboToolKit PC service required); the streamer launches the CloudXR runtime in-process via `isaacteleop[cloudxr]`:
+**Isaac Teleop / CloudXR alternative** (**G1 + Thor backpack only**) — connects the headset over CloudXR (no XRoboToolKit PC service required); the streamer launches the CloudXR runtime in-process via `isaaccapture[cloudxr]`:
 
 ```bash
 source .venv_teleop/bin/activate
@@ -354,7 +354,7 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager
 #   --vis_vr3pt --vis_smpl
 ```
 
-**Isaac Teleop / CloudXR alternative** (**G1 + Thor backpack only**) — in-process CloudXR runtime via `isaacteleop[cloudxr]`, no XRoboToolKit PC service required:
+**Isaac Teleop / CloudXR alternative** (**G1 + Thor backpack only**) — in-process CloudXR runtime via `isaaccapture[cloudxr]`, no XRoboToolKit PC service required:
 
 ```bash
 source .venv_teleop/bin/activate

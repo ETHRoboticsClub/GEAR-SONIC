@@ -22,8 +22,10 @@
 
 """
 
+import argparse
 from collections import defaultdict, deque
 from enum import Enum, IntEnum
+import ipaddress
 import os
 import subprocess
 import threading
@@ -835,6 +837,25 @@ class PicoReader:
             return 0
         return int(xrt.get_time_stamp_ns())
 
+    def get_input_timestamp_ns(self) -> int:
+        return self.get_timestamp_ns()
+
+    def get_tracking(self) -> input_readers.Tracking:
+        """XRoboToolkit reports body tracking only."""
+        sample = self.get_latest()
+        fresh = (
+            sample is not None
+            and time.monotonic() - sample["timestamp_monotonic"]
+            <= input_readers.INPUT_STALE_AFTER_S
+        )
+        return input_readers.Tracking(body=fresh)
+
+    def get_three_point_body(self):
+        """``("body", (24, 7) array)`` while the body is tracked, else None."""
+        if not self.get_tracking().body:
+            return None
+        return "body", self.get_latest()["body_poses_np"]
+
     def _run(self):
         last_report = time.time()
         while not self._stop.is_set():
@@ -1568,15 +1589,19 @@ class PoseStreamer:
 def _init_input_source(
     input_source: str,
     buffer_size: int,
+    isaac_teleop_options: dict | None = None,
 ) -> "PicoReader | input_readers.IsaacTeleopReader":
-    """Create, start, and wait for readiness of the requested teleop input source."""
+    """Create and start the requested teleop input source.
+
+    Returns without waiting for any device; readers report what is tracked.
+    ``isaac_teleop_options`` are ``IsaacTeleopClient`` keyword arguments.
+    """
     if input_source == "isaac-teleop":
-        reader = input_readers.IsaacTeleopReader(max_queue_size=buffer_size)
+        reader = input_readers.IsaacTeleopReader(
+            max_queue_size=buffer_size, **(isaac_teleop_options or {})
+        )
         reader.start()
-        print("Using Isaac Teleop (in-process CloudXR / DeviceIO), waiting for data...")
-        while reader.get_latest() is None:
-            print("waiting for Isaac Teleop body data (connect the headset to CloudXR)...")
-            time.sleep(1)
+        print("Using Isaac Teleop (in-process CloudXR / DeviceIO); connect any device.")
         return reader
 
     if xrt is None:
@@ -1586,10 +1611,6 @@ def _init_input_source(
 
     subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
     xrt.init()
-    print("Waiting for body tracking data...")
-    while not xrt.is_body_data_available():
-        print("waiting for body data...")
-        time.sleep(1)
 
     reader = PicoReader(max_queue_size=buffer_size)
     reader.start()
@@ -1609,9 +1630,10 @@ def run_pico(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    isaac_teleop_options: dict | None = None,
 ):
     """Run body tracking with real-time visualization and ZMQ streaming."""
-    reader = _init_input_source(input_source, buffer_size)
+    reader = _init_input_source(input_source, buffer_size, isaac_teleop_options)
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
@@ -1738,7 +1760,10 @@ class PlannerStreamer:
         # Persistent facing buffer (unit vector on XY plane)
         self.yaw_accumulator = YawAccumulator()
         self.last_send = time.time()
-        self.last_xrt_timestamp = None
+        self.last_input_timestamp = None
+        # 3-point source ("body" or "headset") the current calibration was captured from.
+        self.three_point_source: str | None = None
+        self._three_point_source_warned = False
 
         # Hand IK solvers for trigger-controlled hand open/close in VR 3PT mode
         self.left_hand_ik_solver, self.right_hand_ik_solver = init_hand_ik_solvers()
@@ -1771,14 +1796,44 @@ class PlannerStreamer:
             )
             self.three_point.reset_with_measured_q(np.zeros(29, dtype=np.float64))
 
+    def calibrate_now(self) -> None:
+        """Calibrate the 3-point pose against the G1 zero pose from the current input."""
+        three_point_body = self.reader.get_three_point_body()
+        if three_point_body is None:
+            print("[Manager] WARNING: No 3-point input available for calibration")
+            return
+        self.three_point_source, body = three_point_body
+        self.three_point.calibrate_now(body)
+
+    def _calibrated_three_point_body(self) -> np.ndarray | None:
+        """The 3-point input, withheld while it comes from another source than the
+        calibration: body and headset inputs differ in pelvis, neck and wrist frames."""
+        three_point_body = self.reader.get_three_point_body()
+        if three_point_body is None:
+            return None
+        source, body = three_point_body
+        if self.three_point.is_pending:
+            self.three_point_source = source
+        if source != self.three_point_source:
+            if not self._three_point_source_warned:
+                print(
+                    f"[PlannerLoop] WARNING: 3-point input switched to '{source}' but the "
+                    f"calibration used '{self.three_point_source}'; not sending VR 3PT "
+                    "targets. Re-enter VR 3PT mode to recalibrate."
+                )
+                self._three_point_source_warned = True
+            return None
+        self._three_point_source_warned = False
+        return body
+
     def run_once(self, stream_mode: StreamMode):
         """Execute one iteration of the planner control loop."""
         try:
-            # Avoid sending old commands if XRT timestamp hasn't advanced, in case of headset disconnect
-            xrt_timestamp = self.reader.get_timestamp_ns()
-            if xrt_timestamp == self.last_xrt_timestamp:
+            # Avoid sending old commands if no fresh input arrived, in case of headset disconnect
+            input_timestamp = self.reader.get_input_timestamp_ns()
+            if input_timestamp == self.last_input_timestamp:
                 return
-            self.last_xrt_timestamp = xrt_timestamp
+            self.last_input_timestamp = input_timestamp
 
             # A+B => next mode; X+Y => previous mode (rising edges)
             a_pressed, b_pressed, x_pressed, y_pressed = get_abxy_buttons(self.reader)
@@ -1841,12 +1896,12 @@ class PlannerStreamer:
             vr_3pt_orientation = None
             vr_3pt_compliance = None
             if stream_mode == StreamMode.PLANNER_VR_3PT:
-                sample = self.reader.get_latest()
-                if sample is not None:
-                    print("[PlannerLoop] Sending VR 3-point pose as target")
-                    vr_3pt_pose = self.three_point.process_smpl_pose(sample["body_poses_np"])
-                    vr_3pt_position = (vr_3pt_pose[:, :3].flatten()).tolist()
-                    vr_3pt_orientation = vr_3pt_pose[:, 3:].flatten().tolist()
+                three_point_body = self._calibrated_three_point_body()
+                if three_point_body is None:
+                    return
+                vr_3pt_pose = self.three_point.process_smpl_pose(three_point_body)
+                vr_3pt_position = (vr_3pt_pose[:, :3].flatten()).tolist()
+                vr_3pt_orientation = vr_3pt_pose[:, 3:].flatten().tolist()
 
                 # Compute hand joints from trigger/grip inputs so operator can
                 # control hand open/close while in VR 3PT mode
@@ -1897,6 +1952,213 @@ class PlannerStreamer:
         self.last_send = time.time()
 
 
+def available_modes(tracking: input_readers.Tracking) -> list[StreamMode]:
+    """Modes a robot-side mode request may currently target."""
+    modes = []
+    if tracking.body:
+        modes.append(StreamMode.POSE)
+    if tracking.body or tracking.head or tracking.controllers or tracking.hands:
+        modes.append(StreamMode.PLANNER)
+    if tracking.body or (tracking.head and (tracking.controllers or tracking.hands)):
+        modes.append(StreamMode.PLANNER_VR_3PT)
+    return modes
+
+
+# Button transitions a mode request may step through (the state machine in
+# run_pico_manager without its OFF and POSE_PAUSE entries). PLANNER_VR_3PT also
+# returns to the mode it was entered from.
+_MODE_HOPS = {
+    StreamMode.OFF: (StreamMode.PLANNER,),
+    StreamMode.PLANNER: (StreamMode.POSE, StreamMode.PLANNER_VR_3PT),
+    StreamMode.POSE: (StreamMode.PLANNER, StreamMode.PLANNER_FROZEN_UPPER_BODY),
+    StreamMode.PLANNER_FROZEN_UPPER_BODY: (StreamMode.POSE, StreamMode.PLANNER_VR_3PT),
+    StreamMode.POSE_PAUSE: (StreamMode.POSE,),
+    StreamMode.PLANNER_VR_3PT: (StreamMode.POSE,),
+}
+
+
+def _next_mode_toward(
+    current: StreamMode, target: StreamMode, vr3pt_parent: StreamMode
+) -> StreamMode:
+    """First hop of the shortest button-transition path from ``current`` to ``target``."""
+    came_from = {current: None}
+    queue = deque([current])
+    while queue:
+        mode = queue.popleft()
+        hops = _MODE_HOPS[mode]
+        if mode == StreamMode.PLANNER_VR_3PT:
+            hops = (vr3pt_parent if mode == current else came_from[mode],) + hops
+        for hop in hops:
+            if hop in came_from:
+                continue
+            came_from[hop] = mode
+            if hop == target:
+                while came_from[hop] != current:
+                    hop = came_from[hop]
+                return hop
+            queue.append(hop)
+    raise ValueError(f"No transition from {current.name} to {target.name}")
+
+
+MODE_REQUEST_TOPIC = b"mode_request"
+
+
+def _decode_mode_request(payload: bytes) -> dict | None:
+    """``{"sequence": int >= 1, "mode": int}`` from msgpack, or None if malformed."""
+    try:
+        request = msgpack.unpackb(payload, raw=False)
+    except Exception as e:
+        print(f"[Manager] WARNING: undecodable mode request ignored ({e})")
+        return None
+    if not isinstance(request, dict):
+        print(f"[Manager] WARNING: malformed mode request ignored: {request!r}")
+        return None
+    sequence, mode = request.get("sequence"), request.get("mode")
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in (sequence, mode)) or (
+        sequence < 1
+    ):
+        print(f"[Manager] WARNING: malformed mode request ignored: {request!r}")
+        return None
+    return {"sequence": sequence, "mode": mode}
+
+
+class ModeRequestReader:
+    """Robot-side mode requests, published on the feedback socket as the topic
+    ``mode_request`` followed by msgpack ``{"sequence": int >= 1, "mode": StreamMode code}``."""
+
+    def __init__(self, host: str, port: int, context: zmq.Context):
+        self._socket = context.socket(zmq.SUB)
+        self._socket.setsockopt(zmq.SUBSCRIBE, MODE_REQUEST_TOPIC)
+        self._socket.connect(f"tcp://{host}:{port}")
+
+    def poll(self) -> dict | None:
+        """Latest well-formed request received since the last poll; never blocks."""
+        latest = None
+        while True:
+            try:
+                message = self._socket.recv(zmq.NOBLOCK)
+            except zmq.Again:
+                return latest
+            request = _decode_mode_request(message[len(MODE_REQUEST_TOPIC) :])
+            if request is not None:
+                latest = request
+
+    def close(self) -> None:
+        self._socket.close(linger=0)
+
+
+class StreamModeManager:
+    """Stream mode and the side effects of switching it, shared by the controller
+    buttons and robot-side mode requests."""
+
+    def __init__(self, socket, reader, pose_streamer, planner_streamer):
+        self.socket = socket
+        self.reader = reader
+        self.pose_streamer = pose_streamer
+        self.planner_streamer = planner_streamer
+        self.current_mode = StreamMode.OFF
+        # Track which mode VR_3PT was entered from, so left_axis_click returns to it.
+        # Will be either PLANNER or PLANNER_FROZEN_UPPER_BODY.
+        self.vr3pt_parent_mode = StreamMode.PLANNER
+        self.applied_mode_request = 0
+        self._mode_request: dict | None = None
+
+    def begin_switch(self, new_mode: StreamMode) -> None:
+        """Side effects before the first iteration in ``new_mode``."""
+        current_mode = self.current_mode
+        if current_mode == StreamMode.OFF and new_mode == StreamMode.PLANNER:
+            # Calibrate VR 3pt tracking NOW: operator should be in zero-ref pose.
+            # Uses the current 3-point input + FK of all-zero body joints.
+            self.planner_streamer.calibrate_now()
+
+        if current_mode == StreamMode.POSE:
+            self.pose_streamer.on_mode_exit()
+
+        # Track parent when entering VR_3PT
+        if new_mode == StreamMode.PLANNER_VR_3PT:
+            self.vr3pt_parent_mode = current_mode
+            print(f"[Manager] VR_3PT parent: {self.vr3pt_parent_mode.name}")
+
+        if new_mode == StreamMode.POSE:
+            self.pose_streamer.reset_yaw()
+        elif new_mode == StreamMode.PLANNER and current_mode != StreamMode.PLANNER_VR_3PT:
+            # Only reset yaw when freshly entering PLANNER from POSE,
+            # not when returning from VR_3PT sub-mode
+            self.planner_streamer.reset_yaw()
+        elif new_mode == StreamMode.PLANNER_FROZEN_UPPER_BODY:
+            if current_mode != StreamMode.PLANNER_VR_3PT:
+                # Freshly entering from POSE: reset yaw and grab initial targets
+                self.planner_streamer.reset_yaw()
+            # Always re-grab the latest robot state as frozen targets,
+            # whether entering from POSE or returning from VR_3PT
+            # (the old targets are stale after VR_3PT moved the arms)
+            self.planner_streamer.save_upper_body_position_target()
+        elif new_mode == StreamMode.PLANNER_VR_3PT:
+            # Recalibrate VR tracking against the robot's actual current pose
+            # (read via g1_debug feedback + FK) to prevent sudden jumps
+            self.planner_streamer.recalibrate_for_vr3pt()
+
+    def finish_switch(self, new_mode: StreamMode) -> None:
+        """Announce ``new_mode`` after its first iteration ran, so that data arrives
+        before the mode switch."""
+        if new_mode == StreamMode.OFF:
+            self.socket.send(build_command_message(start=False, stop=True, planner=True))
+            exit()
+        elif (
+            new_mode == StreamMode.PLANNER
+            or new_mode == StreamMode.PLANNER_FROZEN_UPPER_BODY
+            or new_mode == StreamMode.PLANNER_VR_3PT
+        ):
+            self.socket.send(build_command_message(start=True, stop=False, planner=True))
+        elif new_mode == StreamMode.POSE:
+            self.socket.send(build_command_message(start=True, stop=False, planner=False))
+
+        print(f"[Manager] StreamMode switch: {self.current_mode.name} -> {new_mode.name}")
+        self.current_mode = new_mode
+
+    def receive_mode_request(self, request: dict | None) -> None:
+        """Queue a request unless it is the one already applied (requests are resent)."""
+        if request is not None and request["sequence"] != self.applied_mode_request:
+            self._mode_request = request
+
+    def mode_request_hop(self, available: list[StreamMode]) -> StreamMode:
+        """Next mode toward the queued request's target; the current mode once it is
+        reached or refused, which records the request as applied."""
+        request = self._mode_request
+        if request is None:
+            return self.current_mode
+        target = next((m for m in StreamMode if m.value == request["mode"]), None)
+        if target in available and target != self.current_mode:
+            return _next_mode_toward(self.current_mode, target, self.vr3pt_parent_mode)
+        if target != self.current_mode:
+            print(
+                f"[Manager] Mode request {request['sequence']} for mode {request['mode']} "
+                f"refused: available {[m.name for m in available]}"
+            )
+        self.applied_mode_request = request["sequence"]
+        self._mode_request = None
+        return self.current_mode
+
+    def manager_state_message(
+        self,
+        toggle_dc: bool,
+        toggle_da: bool,
+        tracking: input_readers.Tracking,
+        available: list[StreamMode],
+    ) -> bytes:
+        return pack_pose_message(
+            {
+                "stream_mode": np.array([self.current_mode.value], dtype=np.int32),
+                "toggle_data_collection": np.array([toggle_dc], dtype=bool),
+                "toggle_data_abort": np.array([toggle_da], dtype=bool),
+                "tracking": tracking.as_array(),
+                "available_modes": np.array([m.value for m in available], dtype=np.int32),
+                "applied_mode_request": np.array([self.applied_mode_request], dtype=np.int64),
+            },
+            topic="manager_state",
+        )
+
+
 def run_pico_manager(
     port: int = 5556,
     buffer_size: int = 15,
@@ -1912,6 +2174,7 @@ def run_pico_manager(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     input_source: str = "xrt",
+    isaac_teleop_options: dict | None = None,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -1919,7 +2182,7 @@ def run_pico_manager(
       A+X: Toggle between planner and pose mode
       A+B+X+Y: Toggle policy start/stop
     """
-    reader = _init_input_source(input_source, buffer_size)
+    reader = _init_input_source(input_source, buffer_size, isaac_teleop_options)
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
@@ -1979,10 +2242,8 @@ def run_pico_manager(
     #   POSE_PAUSE: left_menu_button held --> POSE_PAUSE, released --> POSE
     #
     print("Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy")
-    current_mode = StreamMode.OFF
-    # Track which mode VR_3PT was entered from, so left_axis_click returns to it.
-    # Will be either PLANNER or PLANNER_FROZEN_UPPER_BODY.
-    vr3pt_parent_mode = StreamMode.PLANNER
+    modes = StreamModeManager(socket, reader, pose_streamer, planner_streamer)
+    mode_requests = ModeRequestReader(zmq_feedback_host, zmq_feedback_port, context)
     prev_toggle_dc = False
     prev_toggle_da = False
     try:
@@ -2007,17 +2268,11 @@ def run_pico_manager(
             # Rising edge: A+B+X+Y pressed together -> toggle policy start/stop (planner=True)
             start_combo = (a_pressed) and (b_pressed) and (x_pressed) and (y_pressed)
 
+            current_mode = modes.current_mode
             new_mode = current_mode
             if current_mode == StreamMode.OFF:
                 if start_combo and not prev_start_combo:
                     new_mode = StreamMode.PLANNER
-                    # Calibrate VR 3pt tracking NOW: operator should be in zero-ref pose.
-                    # Uses the current Pico SMPL frame + FK of all-zero body joints.
-                    sample = reader.get_latest()
-                    if sample is not None:
-                        three_point.calibrate_now(sample["body_poses_np"])
-                    else:
-                        print("[Manager] WARNING: No SMPL data available for calibration")
 
             elif current_mode == StreamMode.PLANNER:
                 # Chain 2: POSE <--(ax)--> PLANNER <--(left_axis_click)--> VR_3PT
@@ -2061,40 +2316,21 @@ def run_pico_manager(
                 if start_combo and not prev_start_combo:
                     new_mode = StreamMode.OFF
                 elif left_axis_click and not prev_left_axis_click:
-                    new_mode = vr3pt_parent_mode  # Return to parent mode
+                    new_mode = modes.vr3pt_parent_mode  # Return to parent mode
                 elif ax_pressed and not prev_ax_pressed:
                     new_mode = StreamMode.POSE
                 elif by_pressed and not prev_by_pressed:
                     new_mode = StreamMode.POSE
 
-            # Handle mode transitions before running loop
+            # Robot-side mode requests move one hop per iteration when the buttons did not.
+            tracking = reader.get_tracking()
+            available = available_modes(tracking)
+            modes.receive_mode_request(mode_requests.poll())
+            if new_mode == current_mode:
+                new_mode = modes.mode_request_hop(available)
+
             if new_mode != current_mode:
-                if current_mode == StreamMode.POSE:
-                    pose_streamer.on_mode_exit()
-
-                # Track parent when entering VR_3PT
-                if new_mode == StreamMode.PLANNER_VR_3PT:
-                    vr3pt_parent_mode = current_mode
-                    print(f"[Manager] VR_3PT parent: {vr3pt_parent_mode.name}")
-
-                if new_mode == StreamMode.POSE:
-                    pose_streamer.reset_yaw()
-                elif new_mode == StreamMode.PLANNER and current_mode != StreamMode.PLANNER_VR_3PT:
-                    # Only reset yaw when freshly entering PLANNER from POSE,
-                    # not when returning from VR_3PT sub-mode
-                    planner_streamer.reset_yaw()
-                elif new_mode == StreamMode.PLANNER_FROZEN_UPPER_BODY:
-                    if current_mode != StreamMode.PLANNER_VR_3PT:
-                        # Freshly entering from POSE: reset yaw and grab initial targets
-                        planner_streamer.reset_yaw()
-                    # Always re-grab the latest robot state as frozen targets,
-                    # whether entering from POSE or returning from VR_3PT
-                    # (the old targets are stale after VR_3PT moved the arms)
-                    planner_streamer.save_upper_body_position_target()
-                elif new_mode == StreamMode.PLANNER_VR_3PT:
-                    # Recalibrate VR tracking against the robot's actual current pose
-                    # (read via g1_debug feedback + FK) to prevent sudden jumps
-                    planner_streamer.recalibrate_for_vr3pt()
+                modes.begin_switch(new_mode)
 
             # Run one iteration of the new mode
             if new_mode == StreamMode.POSE:
@@ -2106,22 +2342,8 @@ def run_pico_manager(
             ):
                 planner_streamer.run_once(new_mode)
 
-            # Make sure to send command messages after loop iteration to ensure data arrives before mode switch
             if new_mode != current_mode:
-                if new_mode == StreamMode.OFF:
-                    socket.send(build_command_message(start=False, stop=True, planner=True))
-                    exit()
-                elif (
-                    new_mode == StreamMode.PLANNER
-                    or new_mode == StreamMode.PLANNER_FROZEN_UPPER_BODY
-                    or new_mode == StreamMode.PLANNER_VR_3PT
-                ):
-                    socket.send(build_command_message(start=True, stop=False, planner=True))
-                elif new_mode == StreamMode.POSE:
-                    socket.send(build_command_message(start=True, stop=False, planner=False))
-
-                print(f"[Manager] StreamMode switch: {current_mode.name} -> {new_mode.name}")
-                current_mode = new_mode
+                modes.finish_switch(new_mode)
 
             # Mode-independent: send manager_state for data exporter
             toggle_dc_tmp = bool(a_pressed) and left_grip_mgr > 0.5
@@ -2130,16 +2352,7 @@ def run_pico_manager(
             toggle_da = toggle_da_tmp and not prev_toggle_da
             prev_toggle_dc = toggle_dc_tmp
             prev_toggle_da = toggle_da_tmp
-            socket.send(
-                pack_pose_message(
-                    {
-                        "stream_mode": np.array([current_mode.value], dtype=np.int32),
-                        "toggle_data_collection": np.array([toggle_dc], dtype=bool),
-                        "toggle_data_abort": np.array([toggle_da], dtype=bool),
-                    },
-                    topic="manager_state",
-                )
-            )
+            socket.send(modes.manager_state_message(toggle_dc, toggle_da, tracking, available))
 
             prev_ax_pressed = ax_pressed
             prev_by_pressed = by_pressed
@@ -2152,14 +2365,20 @@ def run_pico_manager(
         # Cleanup resources
         reader.stop()
         three_point.close()
+        mode_requests.close()
         socket.close()
         context.term()
         print("[Manager] Shutdown complete")
 
 
-if __name__ == "__main__":
+def _ipv4_address(value: str) -> str:
+    try:
+        return str(ipaddress.IPv4Address(value))
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"not a literal IPv4 address: {value!r}") from e
 
-    import argparse
+
+if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--buffer_size", type=int, default=15, help="Sliding window buffer size")
@@ -2251,7 +2470,45 @@ if __name__ == "__main__":
             "'isaac-teleop' for in-process IsaacTeleop / CloudXR DeviceIO"
         ),
     )
+    parser.add_argument(
+        "--body-vendor",
+        default="pico-xr",
+        choices=input_readers.BODY_VENDORS,
+        help="isaac-teleop full-body source: headset body tracking or an Xsens MVN suit",
+    )
+    parser.add_argument(
+        "--xsens-plugin",
+        default=os.environ.get("ISAAC_TELEOP_XSENS_PLUGIN"),
+        help="Path to xsens_full_body_plugin (default: $ISAAC_TELEOP_XSENS_PLUGIN)",
+    )
+    parser.add_argument(
+        "--xsens-address",
+        type=_ipv4_address,
+        help=(
+            "IPv4 address of the one interface the MVN PC reaches (required for xsens). "
+            "The UDP pose stream has no authentication, so do not bind every interface."
+        ),
+    )
+    parser.add_argument(
+        "--xsens-port",
+        type=int,
+        default=input_readers.XSENS_DEFAULT_PORT,
+        help=f"UDP port MVN Studio streams to (default: {input_readers.XSENS_DEFAULT_PORT})",
+    )
     args = parser.parse_args()
+    isaac_teleop_options = {"body_vendor": args.body_vendor}
+    if args.body_vendor == "xsens":
+        if args.input_source != "isaac-teleop":
+            parser.error("--body-vendor xsens requires --input-source isaac-teleop")
+        if not args.xsens_plugin:
+            parser.error("--body-vendor xsens requires --xsens-plugin or $ISAAC_TELEOP_XSENS_PLUGIN")
+        if args.xsens_address is None:
+            parser.error("--body-vendor xsens requires --xsens-address")
+        isaac_teleop_options.update(
+            xsens_plugin=args.xsens_plugin,
+            xsens_address=args.xsens_address,
+            xsens_port=args.xsens_port,
+        )
 
     # Standalone VR3Pt test modes (exit after finishing)
     if args.vr3pt_test:
@@ -2292,6 +2549,7 @@ if __name__ == "__main__":
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
+            isaac_teleop_options=isaac_teleop_options,
         )
     else:
         # Run legacy single-thread pose streaming
@@ -2308,4 +2566,5 @@ if __name__ == "__main__":
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
             input_source=args.input_source,
+            isaac_teleop_options=isaac_teleop_options,
         )

@@ -57,10 +57,11 @@ if ! command -v uv &>/dev/null; then
 fi
 echo "[OK] uv $(uv --version)"
 
-# ── 2. Install a uv-managed Python 3.10 (includes dev headers / Python.h) ────
-echo "[INFO] Installing uv-managed Python 3.10 (includes development headers) …"
-uv python install 3.10
-MANAGED_PY="$(uv python find --no-project 3.10)"
+# ── 2. Install a uv-managed Python 3.11 (includes dev headers / Python.h) ────
+# 3.11 is the oldest Python isaaccapture supports (step 5c).
+echo "[INFO] Installing uv-managed Python 3.11 (includes development headers) …"
+uv python install 3.11
+MANAGED_PY="$(uv python find --no-project 3.11)"
 echo "[OK] Using Python: $MANAGED_PY"
 
 # ── 3. Clean previous venv (if any) ──────────────────────────────────────────
@@ -69,7 +70,7 @@ echo "[INFO] Removing old .venv_teleop (if present) …"
 rm -rf .venv_teleop
 
 # ── 4. Create venv & install teleop extra ─────────────────────────────────────
-echo "[INFO] Creating .venv_teleop with uv-managed Python 3.10 …"
+echo "[INFO] Creating .venv_teleop with uv-managed Python 3.11 …"
 uv venv .venv_teleop --python "$MANAGED_PY" --prompt gear_sonic_teleop
 # shellcheck disable=SC1091
 source .venv_teleop/bin/activate
@@ -112,12 +113,12 @@ fi
 
 uv pip install --no-build-isolation -e external_dependencies/XRoboToolkit-PC-Service-Pybind_X86_and_ARM64/
 
-# ── 5c. Install isaacteleop[cloudxr] for the in-process CloudXR / DeviceIO path
+# ── 5c. Install isaaccapture[cloudxr] for the in-process CloudXR / DeviceIO path
 #       (--input-source isaac-teleop in pico_manager_thread_server.py).
 # Hosted on pypi.nvidia.com (public index, no auth). Replaces the legacy
 # multi-container path (./scripts/run_cloudxr_via_docker.sh + teleop_ros2_ref).
-echo "[INFO] Installing isaacteleop[cloudxr]~=1.3.0 from pypi.nvidia.com …"
-uv pip install 'isaacteleop[cloudxr]~=1.3.0' --prerelease=allow \
+echo "[INFO] Installing isaaccapture[cloudxr]==1.7.6rc1 from pypi.nvidia.com …"
+uv pip install 'isaaccapture[cloudxr]==1.7.6rc1' --prerelease=allow \
     --extra-index-url https://pypi.nvidia.com
 
 # Seed ~/cloudxr.env with the device profile CloudXRLauncher negotiates against.
