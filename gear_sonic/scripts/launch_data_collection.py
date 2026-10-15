@@ -30,7 +30,6 @@ Usage (from repo root — no venv activation needed):
     python gear_sonic/scripts/launch_data_collection.py                          # real robot (default)
     python gear_sonic/scripts/launch_data_collection.py --sim                    # MuJoCo sim
     python gear_sonic/scripts/launch_data_collection.py --no-camera-viewer       # skip viewer
-    python gear_sonic/scripts/launch_data_collection.py --pico-input-source isaac-teleop  # in-process CloudXR / DeviceIO
 """
 
 from dataclasses import dataclass
@@ -123,9 +122,6 @@ class DataCollectionLaunchConfig:
     pico_manager: bool = True
     """Run pico_manager_thread_server with --manager flag."""
 
-    pico_input_source: str = "xrt"
-    """Teleop input source for pico_manager_thread_server.py (xrt or isaac-teleop)."""
-
     pico_vis_vr3pt: bool = False
     """Enable VR 3-point visualization on the teleop streamer."""
 
@@ -197,9 +193,6 @@ def _check_prerequisites(config: DataCollectionLaunchConfig):
             ".venv_sim not found. Set up the simulation venv first "
             "(see install instructions)."
         )
-
-    if config.pico_input_source not in {"xrt", "isaac-teleop"}:
-        errors.append("--pico-input-source must be one of: xrt, isaac-teleop")
 
     if errors:
         print("ERROR: Prerequisites not met:\n")
@@ -298,7 +291,6 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Task prompt:     {config.task_prompt}")
     print(f"  Dataset name:    {config.dataset_name or '(auto)'}")
     print(f"  Deploy input:    {config.deploy_input_type}")
-    print(f"  Teleop input:    {config.pico_input_source}")
     if config.deploy_checkpoint:
         print(f"  Checkpoint:      {config.deploy_checkpoint}")
     print(f"  Camera:          {config.camera_host}:{config.camera_port}")
@@ -371,8 +363,7 @@ def main(config: DataCollectionLaunchConfig):
     pico_cmd = (
         f"cd {repo_root} && "
         f"source .venv_teleop/bin/activate && "
-        f"python gear_sonic/scripts/pico_manager_thread_server.py "
-        f"--input-source {config.pico_input_source}"
+        f"python gear_sonic/scripts/pico_manager_thread_server.py"
     )
     if config.pico_manager:
         pico_cmd += " --manager"

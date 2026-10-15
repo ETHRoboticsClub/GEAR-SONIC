@@ -2,7 +2,7 @@
 
 Every test drives ``StreamModeManager.step``, the body of run_pico_manager's
 loop. Readers are doubles at the reader boundary (``ScriptedReader``) or the
-real IsaacTeleopReader fed with fake DeviceIO views.
+real TrackingReader fed with tracking frames.
 """
 
 import time
@@ -17,8 +17,8 @@ from gear_sonic.scripts import pico_manager_thread_server as server
 from gear_sonic.scripts.pico_manager_thread_server import StreamMode
 from gear_sonic.tests.teleop import fakes
 from gear_sonic.utils.teleop.input_readers import (
-    IsaacTeleopReader,
     Tracking,
+    TrackingReader,
     synthesize_three_point_body,
 )
 
@@ -38,11 +38,11 @@ BUTTONS = {
 }
 
 
-class ScriptedReader(IsaacTeleopReader):
-    """IsaacTeleopReader whose tracking, buttons and 3-point input are set by the test."""
+class ScriptedReader(TrackingReader):
+    """TrackingReader whose tracking, buttons and 3-point input are set by the test."""
 
     def __init__(self, tracking=Tracking()):
-        super().__init__(client=fakes.FakeClient())
+        super().__init__()
         self.tracking = tracking
         self.pressed = set()
         self.left_stick = (0.0, 0.0)
@@ -464,7 +464,7 @@ def planner(monkeypatch):
 
 
 def test_planner_sends_on_controller_input_alone(planner):
-    reader = IsaacTeleopReader(client=fakes.FakeClient())
+    reader = fakes.reader()
     socket = fakes.RecordingSocket()
     streamer = planner(reader)
     streamer.socket = socket
@@ -475,7 +475,7 @@ def test_planner_sends_on_controller_input_alone(planner):
             right_controller=fakes.controller([0.2, y, -0.3]),
         )
 
-    reader._update(controllers(1.0), T0)
+    fakes.feed(reader, controllers(1.0), T0)
     streamer.run_once(StreamMode.PLANNER)
     assert len(socket.sent) == 1
     _, fields = fakes.decode(socket.sent[0], b"planner")
@@ -484,11 +484,11 @@ def test_planner_sends_on_controller_input_alone(planner):
     streamer.run_once(StreamMode.PLANNER)
     assert len(socket.sent) == 1  # no fresh input, nothing resent
 
-    reader._update(controllers(1.01), T0 + 10 * MS)
+    fakes.feed(reader, controllers(1.01), T0 + 10 * MS)
     streamer.run_once(StreamMode.PLANNER)
     assert len(socket.sent) == 2
 
-    reader._update(controllers(1.01), T0 + 300 * MS)  # frozen controllers
+    fakes.feed(reader, fakes.raw(), T0 + 300 * MS)  # the module lost the controllers
     streamer.run_once(StreamMode.PLANNER)
     assert len(socket.sent) == 2
 
@@ -589,75 +589,3 @@ def test_three_point_input_from_another_source_is_withheld_until_reentry(planner
 
     for message in loop.messages(b"planner")[-4:]:
         assert "vr_position" not in message  # the dropped calibration is not reused
-
-
-@pytest.mark.parametrize(
-    "bad_head, bad_grip",
-    [
-        ([np.nan, 1.6, 0.0, 0, 0, 0, 1], None),
-        ([0.0, 1.6, 0.0, 0, 0, 0, 0], None),
-        ([0.0, 1.6, 0.0, 0, np.nan, 0, 1], None),
-        ([0.0, 1.6, 0.0, 0, 0, 0, 1.01], None),
-        (None, [0.2, 1.0, -0.3, 0, 0, 0, 0]),
-        (None, [0.2, np.inf, -0.3, 0, 0, 0, 1]),
-    ],
-)
-def test_corrupt_poses_never_reach_the_three_point_pipeline(
-    planner, monkeypatch, bad_head, bad_grip
-):
-    seen = []
-    process_3pt_pose = server._process_3pt_pose
-
-    def checked_process_3pt_pose(body):
-        seen.append(body.copy())
-        assert np.isfinite(body).all()
-        np.testing.assert_allclose(np.linalg.norm(body[:, 3:], axis=1), 1.0, atol=1e-5)
-        return process_3pt_pose(body)
-
-    monkeypatch.setattr(server, "_process_3pt_pose", checked_process_3pt_pose)
-    reader = IsaacTeleopReader(client=fakes.FakeClient())
-    loop = Loop(reader=reader, planner=planner(reader))
-
-    def poll(t, corrupt, start=False):
-        clicks = dict(primary_click=start, secondary_click=start)  # A+B / X+Y
-        head = fakes.head([0.0, 1.6 + t, 0.0])
-        right = fakes.controller([0.2, 1.0 + t, -0.3], **clicks)
-        if corrupt and bad_head is not None:
-            head = fakes.head(bad_head[:3])
-            head.pose = fakes.pose(bad_head[:3], bad_head[3:])
-        if corrupt and bad_grip is not None:
-            right.grip_pose.pose = fakes.pose(bad_grip[:3], bad_grip[3:])
-        reader._update(
-            fakes.raw(
-                head=head,
-                left_controller=fakes.controller([-0.2, 1.0 + t, -0.3], **clicks),
-                right_controller=right,
-            ),
-            T0 + int(t * 1e9),
-        )
-
-    # A corrupt grip drops that controller's buttons, so only a corrupt head can be
-    # present while A+B+X+Y starts control.
-    start_corrupt = bad_head is not None
-    poll(0.0, corrupt=start_corrupt, start=True)
-    if start_corrupt:
-        assert not reader.get_tracking().head
-        assert reader.get_three_point_body() is None
-    loop.step()  # OFF -> PLANNER calibrates from nothing rather than from the bad pose
-    assert loop.mode == StreamMode.PLANNER
-    seen.clear()
-    poll(0.0002, corrupt=True)
-    loop.step()
-    loop.requests.send(2, StreamMode.PLANNER_VR_3PT)
-    loop.step(2)
-    assert loop.mode == StreamMode.PLANNER  # VR 3PT is not available
-    assert seen == []
-
-    for i in range(1, 4):  # good input: VR 3PT runs; corrupt input in between is skipped
-        poll(0.001 * i, corrupt=False)
-        loop.requests.send(3, StreamMode.PLANNER_VR_3PT)
-        loop.step()
-        poll(0.001 * i + 0.0005, corrupt=True)
-        loop.step()
-    assert loop.mode == StreamMode.PLANNER_VR_3PT
-    assert seen  # the pipeline ran, and only on checked input

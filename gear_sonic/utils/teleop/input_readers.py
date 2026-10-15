@@ -1,7 +1,21 @@
-"""Input source readers for body tracking data.
+"""The operator's tracking, as the robot's teleop module reports it.
 
-PicoReader         -- pulls data from XRoboToolkit SDK (Pico headset).
-IsaacTeleopReader  -- in-process IsaacTeleop / CloudXR DeviceIO session.
+The module (ETHRC's ``ethrc_teleop``) reads the devices; this server never does.
+The robot-side bridge relays each of the module's tracking frames on the
+feedback socket as the topic ``tracking`` followed by msgpack::
+
+    {"sequence": int, "sample_time_ns": int,
+     "head": [x, y, z, qx, qy, qz, qw] | None,
+     "left_controller" / "right_controller": {"grip": [7], "aim": [7],
+         "primary", "secondary", "menu", "stick_click": bool,
+         "trigger", "squeeze", "stick_x", "stick_y": float} | None,
+     "left_hand" / "right_hand": {"positions": [78], "rotations": [104]} | None,
+     "body": {"positions": [72], "rotations": [96]} | None}
+
+A device is present only while the module judges it tracked (finite, unit
+quaternions, still changing). Poses are in the module's operator space, REP-103
+(x forward, y left, z up); ``TrackingReader`` converts them to the OpenXR stage
+convention (x right, y up, z backward) the retargeting below was written in.
 """
 
 from dataclasses import dataclass
@@ -10,150 +24,35 @@ import threading
 import time
 from typing import Any
 
+import msgpack
 import numpy as np
 from scipy.spatial.transform import Rotation
+import zmq
 
 logger = logging.getLogger(__name__)
 
-try:
-    import xrobotoolkit_sdk as xrt
-except ImportError:
-    xrt = None
+TRACKING_TOPIC = b"tracking"
 
-
-class PicoReader:
-    """Background reader that pulls Pico/XRT data and computes dt/FPS."""
-
-    STALE_TIMEOUT = 5.0
-
-    def __init__(self, max_queue_size: int = 15):
-        del max_queue_size
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._fps_ema = 0.0
-        self._last_stamp_ns = None
-        self._latest = None
-        self._lock = threading.Lock()
-        self._last_new_data_time = time.monotonic()
-        self._disconnected = threading.Event()
-
-    def start(self):
-        if not self._thread.is_alive():
-            self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-
-    def get_latest(self):
-        with self._lock:
-            return self._latest
-
-    @property
-    def disconnected(self) -> bool:
-        return self._disconnected.is_set()
-
-    def clear_disconnect(self):
-        self._disconnected.clear()
-        self._last_new_data_time = time.monotonic()
-        self._last_stamp_ns = None
-        self._fps_ema = 0.0
-
-    def get_timestamp_ns(self) -> int:
-        if xrt is None:
-            return 0
-        return int(xrt.get_time_stamp_ns())
-
-    def _run(self):
-        last_report = time.time()
-        while not self._stop.is_set():
-            if xrt is None or not xrt.is_body_data_available():
-                if (
-                    time.monotonic() - self._last_new_data_time > self.STALE_TIMEOUT
-                    and not self._disconnected.is_set()
-                ):
-                    logger.warning(
-                        "[PicoReader] No new data for %.1fs, flagging disconnect",
-                        self.STALE_TIMEOUT,
-                    )
-                    self._disconnected.set()
-                time.sleep(0.001)
-                continue
-
-            stamp_ns = xrt.get_time_stamp_ns()
-            prev_stamp_ns = self._last_stamp_ns
-            if prev_stamp_ns is not None and stamp_ns == prev_stamp_ns:
-                if (
-                    time.monotonic() - self._last_new_data_time > self.STALE_TIMEOUT
-                    and not self._disconnected.is_set()
-                ):
-                    logger.warning(
-                        "[PicoReader] Timestamps stale for %.1fs, flagging disconnect",
-                        self.STALE_TIMEOUT,
-                    )
-                    self._disconnected.set()
-                time.sleep(0.000001)
-                continue
-
-            self._last_new_data_time = time.monotonic()
-            if self._disconnected.is_set():
-                logger.info("[PicoReader] Fresh data received, connection restored")
-                self._disconnected.clear()
-
-            device_dt = ((stamp_ns - prev_stamp_ns) * 1e-9) if prev_stamp_ns is not None else 0.0
-            if device_dt > 0.0:
-                inst = 1.0 / device_dt
-                self._fps_ema = inst if self._fps_ema == 0.0 else (0.9 * self._fps_ema + 0.1 * inst)
-            self._last_stamp_ns = stamp_ns
-
-            try:
-                body_poses = xrt.get_body_joints_pose()
-                sample = {
-                    "body_poses_np": np.array(body_poses),
-                    "timestamp_realtime": time.time(),
-                    "timestamp_monotonic": time.monotonic(),
-                    "timestamp_ns": stamp_ns,
-                    "dt": device_dt,
-                    "fps": self._fps_ema,
-                }
-                with self._lock:
-                    self._latest = sample
-
-                now = time.time()
-                if now - last_report >= 5.0:
-                    logger.info(
-                        "[PicoReader] dt_ts: %.2f ms, fps: %.2f",
-                        device_dt * 1000.0,
-                        self._fps_ema,
-                    )
-                    last_report = now
-            except Exception:
-                logger.exception("[PicoReader] read error")
-
-
-# Full-body sources selectable for the Isaac Teleop input (TrackerVendor "body.<name>").
-BODY_VENDORS = ("pico-xr", "xsens")
-XSENS_DEFAULT_PORT = 9764  # MVN Studio's "Isaac Teleop" network streamer preset
-
-# How long a device's data may stay bit-identical before it counts as no longer
-# tracked. CloudXR and the body.xsens vendor keep returning the last sample after
-# their source stops (MVN stops streaming, headset disconnects), while live
-# tracked human motion never repeats bit-exactly between frames. 0.2 s is 12
-# frames at 60 Hz (MVN's stream rate, and no headset runs slower), so a few
-# dropped datagrams or polls landing between two device frames do not trip it.
+# Frames arrive at the module's poll rate (60-90 Hz); without one for this long the
+# module or the bridge stopped, and nothing counts as tracked. 12 frames at 60 Hz.
 INPUT_STALE_AFTER_S = 0.2
+
+# Runtimes normalize quaternions in float32 (error ~1e-7); a larger deviation is a
+# corrupt pose, which the module never sends as tracked.
+QUAT_NORM_TOLERANCE = 1e-3
+
+# Rows: OpenXR stage axes in operator space; operator = C @ openxr, openxr = C.T @ operator.
+OPERATOR_FROM_OPENXR = np.array([[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+_OPENXR_FROM_OPERATOR = Rotation.from_matrix(OPERATOR_FROM_OPENXR.T)
 
 # XR_BD_body_tracking joints (core.BodyJoint).
 NUM_BODY_JOINTS = 24
 BODY_PELVIS, BODY_NECK = 0, 12
 BODY_LEFT_WRIST, BODY_RIGHT_WRIST = 20, 21
 BODY_LEFT_HAND, BODY_RIGHT_HAND = 22, 23
-# GEAR-SONIC takes its wrists from LEFT_HAND/RIGHT_HAND. Xsens MVN tracks no
-# fingers and sends those two as invalid copies of LEFT_WRIST/RIGHT_WRIST.
-_HAND_JOINT_FROM_WRIST = ((BODY_LEFT_HAND, BODY_LEFT_WRIST), (BODY_RIGHT_HAND, BODY_RIGHT_WRIST))
 
-# XR_EXT_hand_tracking joint index of the wrist (core.HandJoint.WRIST).
+# XR_EXT_hand_tracking joints; the wrist's index (core.HandJoint.WRIST).
+NUM_HAND_JOINTS = 26
 _HAND_JOINT_WRIST = 1
 
 # Headset three-point synthesis (no body tracker). Orientations of device frames
@@ -190,107 +89,10 @@ class Tracking:
         return np.array([self.body, self.head, self.controllers, self.hands], dtype=np.uint8)
 
 
-class _StaleGuard:
-    """Tracks whether one device's data is still changing between polls."""
-
-    def __init__(self):
-        self._last: np.ndarray | None = None
-        self._changed_ns = 0
-
-    def update(self, data: np.ndarray | None, now_ns: int) -> tuple[bool, bool]:
-        """Return ``(fresh, live)``: changed since the previous poll, changed recently."""
-        if data is None:
-            self._last = None
-            return False, False
-        # equal_nan: a NaN in an invalid body joint must not read as a new sample.
-        fresh = self._last is None or not np.array_equal(data, self._last, equal_nan=True)
-        if fresh:
-            self._last = data.copy()
-            self._changed_ns = now_ns
-        return fresh, now_ns - self._changed_ns <= INPUT_STALE_AFTER_S * 1e9
-
-
-# Runtimes normalize quaternions in float32 (error ~1e-7); a larger deviation is a
-# corrupt or uninitialized pose (e.g. an all-zero quaternion), not tracking.
-QUAT_NORM_TOLERANCE = 1e-3
-
-
-def _valid_poses(poses: np.ndarray) -> np.ndarray:
-    """Per row of ``[..., x, y, z, qx, qy, qz, qw]``: finite with a unit quaternion."""
-    finite = np.isfinite(poses).all(axis=-1)
-    with np.errstate(invalid="ignore"):
-        unit = np.abs(np.linalg.norm(poses[..., 3:7], axis=-1) - 1.0) <= QUAT_NORM_TOLERANCE
-    return finite & unit
-
-
-def _checked(pose: np.ndarray) -> np.ndarray | None:
-    return pose if _valid_poses(pose) else None
-
-
-def _pose7(pose: Any) -> np.ndarray:
-    """``[x, y, z, qx, qy, qz, qw]`` from a schema ``Pose``."""
-    p, o = pose.position, pose.orientation
-    return np.array([p.x, p.y, p.z, o.x, o.y, o.z, o.w], dtype=np.float64)
-
-
-def _body_joints(full_body: Any) -> tuple[np.ndarray, np.ndarray] | None:
-    """``(poses (24, 7) float32 xyz+xyzw, valid (24,) bool)`` from a ``FullBodyPose`` view."""
-    if full_body is None:
-        return None
-    joints = full_body.joints
-    poses = np.concatenate(
-        [np.asarray(joints.positions), np.asarray(joints.orientations)], axis=1
-    ).astype(np.float32)
-    valid = np.asarray(joints.is_valid).astype(bool) & _valid_poses(poses)
-    return poses, valid
-
-
-def _fill_hand_joints_from_wrists(poses: np.ndarray, valid: np.ndarray) -> None:
-    """Use a valid wrist joint for its invalid hand joint, in place."""
-    for hand, wrist in _HAND_JOINT_FROM_WRIST:
-        if not valid[hand] and valid[wrist]:
-            poses[hand] = poses[wrist]
-            valid[hand] = True
-
-
-def _controller_grip(snapshot: Any) -> np.ndarray | None:
-    grip = None if snapshot is None else snapshot.grip_pose
-    if grip is None or not grip.is_valid:
-        return None
-    pose = _pose7(grip.pose)
-    return _checked(pose)
-
-
-def _hand_wrist(hand: Any) -> np.ndarray | None:
-    if hand is None:
-        return None
-    joints = hand.joints
-    if not joints.is_valid[_HAND_JOINT_WRIST]:
-        return None
-    pose = np.concatenate(
-        [joints.positions[_HAND_JOINT_WRIST], joints.orientations[_HAND_JOINT_WRIST]]
-    ).astype(np.float64)
-    return _checked(pose)
-
-
-def _controller_inputs_to_dict_side(snapshot: Any) -> dict[str, float]:
-    """Project one ControllerSnapshot.inputs into the dict shape consumed by helpers."""
-    inputs = snapshot.inputs
-    return {
-        "trigger_value": float(inputs.trigger_value),
-        "squeeze_value": float(inputs.squeeze_value),
-        "thumbstick_x": float(inputs.thumbstick_x),
-        "thumbstick_y": float(inputs.thumbstick_y),
-        "thumbstick_click": float(inputs.thumbstick_click),
-        "primary_click": float(inputs.primary_click),
-        "secondary_click": float(inputs.secondary_click),
-    }
-
-
 def _build_controller_dict(sides: dict[str, dict[str, float]]) -> dict[str, Any] | None:
     """Merge per-side inputs into the controller dict schema that
     ``pico_manager_thread_server`` consumes (left/right trigger, squeeze,
-    thumbstick, click, primary/secondary click)."""
+    thumbstick, click, primary/secondary and menu click)."""
     if not sides:
         return None
     out: dict[str, Any] = {}
@@ -301,6 +103,7 @@ def _build_controller_dict(sides: dict[str, dict[str, float]]) -> dict[str, Any]
         out[f"{side}_thumbstick_click"] = inp["thumbstick_click"]
         out[f"{side}_primary_click"] = inp["primary_click"]
         out[f"{side}_secondary_click"] = inp["secondary_click"]
+        out[f"{side}_menu_click"] = inp["menu_click"]
     return out
 
 
@@ -335,83 +138,118 @@ def synthesize_three_point_body(
     return body
 
 
-class IsaacTeleopReader:
-    """Background reader using the in-process IsaacTeleop / CloudXR DeviceIO session.
+def to_openxr(positions: np.ndarray, rotations: np.ndarray) -> np.ndarray:
+    """``(N, 7)`` OpenXR stage poses ``[x, y, z, qx, qy, qz, qw]`` from ``(N, 3)``
+    operator-space positions and ``(N, 4)`` xyzw rotations. Device-local axes are
+    unchanged; only the reference space converts. Raises ValueError for a
+    non-finite value or a quaternion that is not unit length."""
+    if not (np.isfinite(positions).all() and np.isfinite(rotations).all()):
+        raise ValueError("non-finite pose")
+    if (np.abs(np.linalg.norm(rotations, axis=1) - 1.0) > QUAT_NORM_TOLERANCE).any():
+        raise ValueError("quaternion is not unit length")
+    xyz = positions @ OPERATOR_FROM_OPENXR  # row vectors: C.T @ p
+    quat = (_OPENXR_FROM_OPERATOR * Rotation.from_quat(rotations)).as_quat()
+    return np.concatenate([xyz, quat], axis=1)
 
-    Drop-in alternative to ``PicoReader`` — same ``get_latest()`` /
-    ``get_controller_data()`` contract, plus ``get_tracking()``,
-    ``get_input_timestamp_ns()`` and ``get_three_point_body()``. Any subset of
-    body tracker, headset, controllers and hand tracking may be present;
-    nothing waits for a particular device.
+
+def _pose(value: Any) -> np.ndarray:
+    return to_openxr(np.asarray(value[:3], float)[None], np.asarray(value[3:7], float)[None])[0]
+
+
+def _joints(value: dict, count: int) -> np.ndarray:
+    positions = np.asarray(value["positions"], float).reshape(count, 3)
+    rotations = np.asarray(value["rotations"], float).reshape(count, 4)
+    return to_openxr(positions, rotations)
+
+
+def _controller_inputs(value: dict) -> dict[str, float]:
+    return {
+        "trigger_value": float(value["trigger"]),
+        "squeeze_value": float(value["squeeze"]),
+        "thumbstick_x": float(value["stick_x"]),
+        "thumbstick_y": float(value["stick_y"]),
+        "thumbstick_click": float(value["stick_click"]),
+        "primary_click": float(value["primary"]),
+        "secondary_click": float(value["secondary"]),
+        "menu_click": float(value["menu"]),
+    }
+
+
+class TrackingReader:
+    """The newest tracking frame the bridge relayed, behind the reader interface
+    the streamers use: ``get_latest()`` (body samples), ``get_controller_data()``,
+    ``get_three_point_body()``, ``get_tracking()``, ``get_input_timestamp_ns()``.
+
+    ``_update`` takes one decoded frame; ``start`` runs a thread that feeds it from
+    a SUB socket on the feedback port. A frame that does not decode or has the
+    wrong shape is dropped with a warning.
     """
 
     def __init__(
-        self,
-        max_queue_size: int = 15,
-        poll_hz: float = 90.0,
-        client: Any = None,
-        **client_kwargs: Any,
+        self, host: str | None = None, port: int | None = None, context=None, clock=time.monotonic_ns
     ):
-        del max_queue_size
-
-        if client is None:
-            try:
-                from gear_sonic.utils.teleop.isaac_teleop_client import IsaacTeleopClient
-            except ImportError as e:
-                raise RuntimeError(
-                    "isaaccapture is required for --input-source isaac-teleop but was not "
-                    "found. Install via install_scripts/install_pico.sh, which runs:\n"
-                    "  uv pip install 'isaaccapture[cloudxr]==1.7.6rc1' --prerelease=allow "
-                    "--extra-index-url https://pypi.nvidia.com"
-                ) from e
-            client = IsaacTeleopClient(**client_kwargs)
-        self._client = client
-        self._period = 1.0 / max(1.0, float(poll_hz))
-
+        self._address = None if host is None else f"tcp://{host}:{port}"
+        self._context = context
+        self._clock = clock
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._received_ns: int | None = None
         self._latest: dict[str, Any] | None = None
-        self._latest_controller: dict[str, Any] | None = None
+        self._controllers: dict[str, Any] | None = None
         self._tracking = Tracking()
-        self._input_timestamp_ns = 0
         self._three_point: tuple[str, Any] | None = None
+        self._input_timestamp_ns = 0
+        self._last_body_ns: int | None = None
         self._fps_ema = 0.0
-        self._last_stamp_ns: int | None = None
-        self._last_report = time.monotonic()
-
-        self._body_guard = _StaleGuard()
-        self._head_guard = _StaleGuard()
-        self._controller_guards = {"left": _StaleGuard(), "right": _StaleGuard()}
-        self._hand_guards = {"left": _StaleGuard(), "right": _StaleGuard()}
 
     def start(self) -> None:
-        self._client.start_runtime()
-        if not self._thread.is_alive():
-            self._thread.start()
+        if self._address is None or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="tracking", daemon=True)
+        self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread.is_alive():
+        if self._thread is not None:
             self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        socket = (self._context or zmq.Context.instance()).socket(zmq.SUB)
+        socket.setsockopt(zmq.SUBSCRIBE, TRACKING_TOPIC)
+        socket.connect(self._address)
         try:
-            self._client.close()
-        except Exception:
-            logger.exception("Failed to close IsaacTeleopClient cleanly")
+            while not self._stop.is_set():
+                if not socket.poll(timeout=100):
+                    continue
+                message = socket.recv()
+                try:
+                    frame = msgpack.unpackb(message[len(TRACKING_TOPIC) :], raw=False)
+                except Exception as e:
+                    logger.warning("[TrackingReader] undecodable frame dropped (%s)", e)
+                    continue
+                self._update(frame, self._clock())
+        finally:
+            socket.close(linger=0)
+
+    def _live(self) -> bool:
+        return (
+            self._received_ns is not None
+            and self._clock() - self._received_ns <= INPUT_STALE_AFTER_S * 1e9
+        )
 
     def get_latest(self) -> dict[str, Any] | None:
-        """Latest fresh, tracked body sample (body-only consumers gate on its timestamp)."""
+        """Latest tracked body sample (body-only consumers gate on its timestamp)."""
         with self._lock:
             return self._latest
 
     def get_controller_data(self) -> dict[str, Any] | None:
-        """Inputs of the controllers that are currently tracked and live."""
         with self._lock:
-            return self._latest_controller
+            return self._controllers if self._live() else None
 
     def get_tracking(self) -> Tracking:
         with self._lock:
-            return self._tracking
+            return self._tracking if self._live() else Tracking()
 
     def get_timestamp_ns(self) -> int:
         with self._lock:
@@ -419,18 +257,18 @@ class IsaacTeleopReader:
         return int(sample["timestamp_ns"]) if sample else 0
 
     def get_input_timestamp_ns(self) -> int:
-        """Advances whenever any fresh, tracked input arrived."""
+        """Advances with every frame that tracks anything."""
         with self._lock:
             return self._input_timestamp_ns
 
     def get_three_point_body(self) -> tuple[str, np.ndarray] | None:
         """``(source, (24, 7) XR_BD array)`` for the 3-point pose, or None.
 
-        ``source`` is ``"body"`` while a body tracker is tracked, else
-        ``"headset"`` (synthesized from head + controllers or hands).
+        ``source`` is ``"body"`` while a body is tracked, else ``"headset"``
+        (synthesized from head + controllers or hands).
         """
         with self._lock:
-            three_point = self._three_point
+            three_point = self._three_point if self._live() else None
         if three_point is None:
             return None
         source, data = three_point
@@ -438,115 +276,64 @@ class IsaacTeleopReader:
             return source, data
         return source, synthesize_three_point_body(*data)
 
-    def _run(self) -> None:
-        last_error = None
-        while not self._stop.is_set():
-            if not self._client.has_session:
-                try:
-                    self._client.open_session(self._stop)
-                except Exception as e:
-                    if str(e) != last_error:
-                        logger.exception("[IsaacTeleopReader] Opening the session failed; retrying")
-                        last_error = str(e)
-                    self._stop.wait(1.0)
-                    continue
-                last_error = None
-            try:
-                raw = self._client._get_tracker_data()  # noqa: SLF001 — internal API by design
-            except Exception:
-                logger.exception("[IsaacTeleopReader] DeviceIO update failed")
-                raw = None
-            self._update(raw, time.monotonic_ns())
-            self._stop.wait(self._period)
+    def _update(self, frame: Any, now_ns: int) -> None:
+        try:
+            sample_ns = int(frame["sample_time_ns"])
+            head = None if frame.get("head") is None else _pose(frame["head"])
+            grips, inputs = {}, {}
+            for side in ("left", "right"):
+                controller = frame.get(f"{side}_controller")
+                if controller is not None:
+                    grips[side] = _pose(controller["grip"])
+                    inputs[side] = _controller_inputs(controller)
+            wrists = {
+                side: _joints(frame[f"{side}_hand"], NUM_HAND_JOINTS)[_HAND_JOINT_WRIST]
+                for side in ("left", "right")
+                if frame.get(f"{side}_hand") is not None
+            }
+            body = None
+            if frame.get("body") is not None:
+                body = _joints(frame["body"], NUM_BODY_JOINTS).astype(np.float32)
+        except (KeyError, TypeError, ValueError, IndexError) as e:
+            logger.warning("[TrackingReader] malformed frame dropped (%s)", e)
+            return
 
-    def _update(self, raw: dict[str, Any] | None, now_ns: int) -> None:
-        """Recompute tracking, inputs and samples from one DeviceIO poll."""
-        raw = raw or {}
-        fresh_inputs = False
-
-        body = _body_joints(raw.get("full_body"))
-        body_fresh, body_live = self._body_guard.update(None if body is None else body[0], now_ns)
-        body_tracked = False
+        controllers, hands = len(grips) == 2, len(wrists) == 2
+        tracking = Tracking(
+            body=body is not None, head=head is not None, controllers=controllers, hands=hands
+        )
         if body is not None:
-            body_poses, valid = body
-            _fill_hand_joints_from_wrists(body_poses, valid)
-            # POSE mode retargets every joint, so every joint must be valid.
-            body_tracked = body_live and bool(valid.all())
-            fresh_inputs |= body_tracked and body_fresh
-
-        head = raw.get("head")
-        head_pose = _checked(_pose7(head.pose)) if head is not None and head.is_tracked else None
-        head_fresh, head_live = self._head_guard.update(head_pose, now_ns)
-        head_tracked = head_pose is not None and head_live
-
-        grips, controller_inputs, controllers_fresh = {}, {}, False
-        for side, guard in self._controller_guards.items():
-            snapshot = raw.get(f"{side}_controller")
-            grip = _controller_grip(snapshot)
-            inputs = None if grip is None else _controller_inputs_to_dict_side(snapshot)
-            data = None if grip is None else np.concatenate([grip, list(inputs.values())])
-            fresh, live = guard.update(data, now_ns)
-            if grip is not None and live:
-                grips[side] = grip
-                controller_inputs[side] = inputs
-                controllers_fresh |= fresh
-        controllers = len(grips) == 2
-
-        wrists, hands_fresh = {}, False
-        for side, guard in self._hand_guards.items():
-            wrist = _hand_wrist(raw.get(f"{side}_hand"))
-            fresh, live = guard.update(wrist, now_ns)
-            if wrist is not None and live:
-                wrists[side] = wrist
-                hands_fresh |= fresh
-        hands = len(wrists) == 2
-
-        fresh_inputs |= head_tracked and head_fresh
-        fresh_inputs |= controllers and controllers_fresh
-        fresh_inputs |= hands and hands_fresh
-
-        if body_tracked:
-            three_point = ("body", body_poses)
-        elif head_tracked and controllers:
-            three_point = ("headset", (head_pose, grips["left"], grips["right"], "grip"))
-        elif head_tracked and hands:
-            three_point = ("headset", (head_pose, wrists["left"], wrists["right"], "hand"))
+            three_point = ("body", body)
+        elif head is not None and controllers:
+            three_point = ("headset", (head, grips["left"], grips["right"], "grip"))
+        elif head is not None and hands:
+            three_point = ("headset", (head, wrists["left"], wrists["right"], "hand"))
         else:
             three_point = None
 
         sample = None
-        if body_tracked and body_fresh:
-            prev_stamp_ns = self._last_stamp_ns
-            device_dt = ((now_ns - prev_stamp_ns) * 1e-9) if prev_stamp_ns is not None else 0.0
-            if device_dt > 0.0:
-                inst = 1.0 / device_dt
-                self._fps_ema = inst if self._fps_ema == 0.0 else (0.9 * self._fps_ema + 0.1 * inst)
-            self._last_stamp_ns = now_ns
+        if body is not None:
+            dt = 0.0 if self._last_body_ns is None else (sample_ns - self._last_body_ns) * 1e-9
+            if dt > 0.0:
+                self._fps_ema = 1.0 / dt if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 / dt
+            self._last_body_ns = sample_ns
             sample = {
-                "body_poses_np": body_poses,
+                "body_poses_np": body,
                 "timestamp_realtime": time.time(),
                 "timestamp_monotonic": now_ns * 1e-9,
-                "timestamp_ns": now_ns,
-                "dt": device_dt,
+                "timestamp_ns": sample_ns,
+                "dt": dt,
                 "fps": self._fps_ema,
             }
 
-        tracking = Tracking(
-            body=body_tracked, head=head_tracked, controllers=controllers, hands=hands
-        )
         with self._lock:
             if tracking != self._tracking:
-                logger.info("[IsaacTeleopReader] Tracking: %s", tracking)
+                logger.info("[TrackingReader] Tracking: %s", tracking)
+            self._received_ns = now_ns
             self._tracking = tracking
-            self._latest_controller = _build_controller_dict(controller_inputs)
+            self._controllers = _build_controller_dict(inputs)
             self._three_point = three_point
-            if fresh_inputs:
-                self._input_timestamp_ns = now_ns
+            if tracking != Tracking():
+                self._input_timestamp_ns = sample_ns
             if sample is not None:
                 self._latest = sample
-
-        if sample is not None and now_ns * 1e-9 - self._last_report >= 5.0:
-            logger.info(
-                "[IsaacTeleopReader] dt: %.2f ms, fps: %.2f", sample["dt"] * 1000.0, self._fps_ema
-            )
-            self._last_report = now_ns * 1e-9

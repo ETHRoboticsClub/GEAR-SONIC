@@ -25,9 +25,7 @@
 import argparse
 from collections import defaultdict, deque
 from enum import Enum, IntEnum
-import ipaddress
 import os
-import subprocess
 import threading
 import time
 
@@ -73,11 +71,6 @@ except ImportError:
     print("Warning: gear_sonic.isaac_utils.rotations not available.")
     remove_smpl_base_rot = None
     smpl_root_ytoz_up = None
-
-try:
-    import xrobotoolkit_sdk as xrt
-except ImportError:
-    xrt = None
 
 try:
     from gear_sonic.utils.teleop.solver.hand.g1_gripper_ik_solver import (
@@ -235,7 +228,7 @@ def _process_3pt_pose(smpl_pose_np):
     """
 
     # Defensive copy: _compute_rel_transform modifies pose[:3] in-place, which would
-    # corrupt the caller's array (e.g. PicoReader._latest) and cause wrong results
+    # corrupt the caller's array (e.g. the reader's latest sample) and cause wrong results
     # if the same sample is processed more than once.
     smpl_pose_np = smpl_pose_np.copy()
 
@@ -345,108 +338,6 @@ def run_vr3pt_visualizer_test():
 
     visualizer = VR3PtPoseVisualizer(axis_length=0.08, ball_radius=0.015, with_g1_robot=True)
     visualizer.show_static()
-
-
-def run_vr3pt_live_visualizer():
-    """
-    Live visualizer for real VR 3-point pose data from Pico.
-    Captures one frame from Pico and displays it alongside reference frames.
-    """
-    if xrt is None:
-        raise ImportError(
-            "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to use live visualizer."
-        )
-
-    if VR3PtPoseVisualizer is None:
-        raise ImportError("VR3PtPoseVisualizer not available. Install pyvista: pip install pyvista")
-
-    print("=" * 60)
-    print("VR 3-Point Pose Live Visualizer (PyVista)")
-    print("=" * 60)
-
-    # Initialize XRT
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
-    xrt.init()
-    print("Waiting for body tracking data...")
-    while not xrt.is_body_data_available():
-        print("waiting for body data...")
-        time.sleep(1)
-
-    print("Body data available! Capturing VR 3-point pose...")
-
-    # Capture body poses and compute vr_3pt_pose
-    body_poses = xrt.get_body_joints_pose()
-    body_poses_np = np.array(body_poses)
-
-    # Process to get 3-point pose (L-Wrist, R-Wrist, Neck)
-    vr_3pt_pose = _process_3pt_pose(body_poses_np)
-
-    print(f"\nCaptured vr_3pt_pose shape: {vr_3pt_pose.shape}")
-    print(f"  L-Wrist: pos={vr_3pt_pose[0, :3]}, quat_wxyz={vr_3pt_pose[0, 3:]}")
-    print(f"  R-Wrist: pos={vr_3pt_pose[1, :3]}, quat_wxyz={vr_3pt_pose[1, 3:]}")
-    print(f"  Neck:    pos={vr_3pt_pose[2, :3]}, quat_wxyz={vr_3pt_pose[2, 3:]}")
-
-    print("\nDisplaying visualization...")
-    print("Close the window to exit.")
-    print("=" * 60)
-
-    visualizer = VR3PtPoseVisualizer(axis_length=0.08, ball_radius=0.015, with_g1_robot=True)
-    visualizer.show_with_vr_pose(vr_3pt_pose)
-
-
-def run_vr3pt_realtime_visualizer(update_hz: int = 10):
-    """
-    Real-time visualizer for VR 3-point pose data from Pico.
-    Continuously updates the visualization with live data.
-
-    Args:
-        update_hz: Update rate in Hz (default 10)
-    """
-    if xrt is None:
-        raise ImportError(
-            "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to use realtime visualizer."
-        )
-
-    if VR3PtPoseVisualizer is None:
-        raise ImportError("VR3PtPoseVisualizer not available. Install pyvista: pip install pyvista")
-
-    print("=" * 60)
-    print("VR 3-Point Pose Real-time Visualizer (PyVista)")
-    print("=" * 60)
-
-    # Initialize XRT
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
-    xrt.init()
-    print("Waiting for body tracking data...")
-    while not xrt.is_body_data_available():
-        print("waiting for body data...")
-        time.sleep(1)
-
-    print("Body data available! Starting real-time visualization...")
-    print(f"Update rate: {update_hz} Hz")
-    print("Close the window or press 'q' to exit.")
-    print("=" * 60)
-
-    # Use the VR3PtPoseVisualizer for real-time visualization with G1 robot
-    visualizer = VR3PtPoseVisualizer(axis_length=0.08, ball_radius=0.015, with_g1_robot=True)
-    visualizer.create_realtime_plotter(interactive=True)
-
-    try:
-        while visualizer.is_open:
-            # Get new data from Pico
-            body_poses = xrt.get_body_joints_pose()
-            body_poses_np = np.array(body_poses)
-            vr_3pt_pose = _process_3pt_pose(body_poses_np)
-
-            # Update visualization
-            visualizer.update_vr_poses(vr_3pt_pose)
-            visualizer.render()
-
-            time.sleep(1.0 / update_hz)
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
-    finally:
-        visualizer.close()
 
 
 def process_smpl_joints(body_pose, global_orient, transl):
@@ -588,16 +479,6 @@ def compute_from_body_poses(parent_indices: list, device, body_poses_np: np.ndar
     return process_smpl_joints(body_pose, global_orient, transl)
 
 
-# def compute_latest_frame(parent_indices: list, device) -> tuple[np.ndarray, np.ndarray]:
-#     """
-#     Pull body data from XRoboToolkit, compute local SMPL joints and body orientation.
-#     Returns (smpl_joints_local_np [24,3], global_orient_quat_np [4,])
-#     """
-#     body_poses = xrt.get_body_joints_pose()
-#     body_poses_np = np.array(body_poses)
-#     return compute_from_body_poses(parent_indices, device, body_poses_np)
-
-
 def init_hand_ik_solvers():
     """Initialize hand IK solvers if available."""
     if G1GripperInverseKinematicsSolver is not None:
@@ -609,148 +490,68 @@ def init_hand_ik_solvers():
     return None, None
 
 
-# Readers that expose `get_controller_data()` returning the IsaacTeleop
-# controller_data dict schema (left/right trigger/squeeze, thumbstick, clicks).
-# Tuple form keeps the dispatch sites uniform if/when a second reader speaks
-# the same schema.
-_ISAAC_TELEOP_READERS = (input_readers.IsaacTeleopReader,)
+def _controls(reader) -> dict:
+    """The tracked controllers' inputs, or {} while none are tracked."""
+    return (reader.get_controller_data() if reader is not None else None) or {}
+
+
+def _pressed(value) -> bool:
+    return float(value) > 0.5
 
 
 def get_controller_inputs(reader=None):
-    """Fetch controller button/trigger states from XRoboToolkit or IsaacTeleop."""
-    if isinstance(reader, _ISAAC_TELEOP_READERS):
-        ctrl = reader.get_controller_data()
-        if ctrl is None:
-            return False, 0.0, 0.0, 0.0, 0.0
-        return (
-            False,
-            float(ctrl.get("left_trigger_value", 0.0)),
-            float(ctrl.get("right_trigger_value", 0.0)),
-            float(ctrl.get("left_squeeze_value", 0.0)),
-            float(ctrl.get("right_squeeze_value", 0.0)),
-        )
-    left_trigger = xrt.get_left_trigger()
-    right_trigger = xrt.get_right_trigger()
-    left_grip = xrt.get_left_grip()
-    right_grip = xrt.get_right_grip()
-    left_menu_button = xrt.get_left_menu_button()
-    return left_menu_button, left_trigger, right_trigger, left_grip, right_grip
+    """(left menu, left trigger, right trigger, left grip, right grip)."""
+    ctrl = _controls(reader)
+    return (
+        _pressed(ctrl.get("left_menu_click", 0.0)),
+        float(ctrl.get("left_trigger_value", 0.0)),
+        float(ctrl.get("right_trigger_value", 0.0)),
+        float(ctrl.get("left_squeeze_value", 0.0)),
+        float(ctrl.get("right_squeeze_value", 0.0)),
+    )
 
 
 def get_controller_axes(reader=None):
-    """Fetch joystick axes (lx, ly, rx, ry). Falls back to zeros if not available."""
-    if isinstance(reader, _ISAAC_TELEOP_READERS):
-        ctrl = reader.get_controller_data()
-        if ctrl is None:
-            return 0.0, 0.0, 0.0, 0.0
-        left_thumbstick = ctrl.get("left_thumbstick", [0.0, 0.0])
-        right_thumbstick = ctrl.get("right_thumbstick", [0.0, 0.0])
-        return (
-            float(left_thumbstick[0]),
-            float(left_thumbstick[1]),
-            float(right_thumbstick[0]),
-            float(right_thumbstick[1]),
-        )
-    if xrt is None:
-        return 0.0, 0.0, 0.0, 0.0
-    try:
-        left_axis = xrt.get_left_axis()  # expected [x, y]
-        right_axis = xrt.get_right_axis()  # expected [x, y]
-        lx = float(left_axis[0]) if len(left_axis) >= 1 else 0.0
-        ly = float(left_axis[1]) if len(left_axis) >= 2 else 0.0
-        rx = float(right_axis[0]) if len(right_axis) >= 1 else 0.0
-        ry = float(right_axis[1]) if len(right_axis) >= 2 else 0.0
-        return lx, ly, rx, ry
-    except Exception:
-        return 0.0, 0.0, 0.0, 0.0
+    """Joystick axes (lx, ly, rx, ry); zeros without controllers."""
+    ctrl = _controls(reader)
+    left = ctrl.get("left_thumbstick", [0.0, 0.0])
+    right = ctrl.get("right_thumbstick", [0.0, 0.0])
+    return float(left[0]), float(left[1]), float(right[0]), float(right[1])
 
 
 def get_menu_buttons(reader=None):
-    """Fetch both menu buttons (left, right). Falls back to False if not available."""
-    if isinstance(reader, _ISAAC_TELEOP_READERS):
-        return False, False
-    if xrt is None:
-        return False, False
-
-    def _safe_btn(attr):
-        try:
-            fn = getattr(xrt, attr)
-            return bool(fn())
-        except Exception:
-            return False
-
-    left = _safe_btn("get_left_menu_button")
-    right = _safe_btn("get_right_menu_button")
-    return left, right
+    """Both menu buttons (left, right)."""
+    ctrl = _controls(reader)
+    return _pressed(ctrl.get("left_menu_click", 0.0)), _pressed(ctrl.get("right_menu_click", 0.0))
 
 
 def get_axis_clicks(reader=None):
-    """Fetch both axis click buttons (left, right). Falls back to False if not available."""
-    if isinstance(reader, _ISAAC_TELEOP_READERS):
-        ctrl = reader.get_controller_data()
-        if ctrl is None:
-            return False, False
-        return (
-            float(ctrl.get("left_thumbstick_click", 0.0)) > 0.5,
-            float(ctrl.get("right_thumbstick_click", 0.0)) > 0.5,
-        )
-    if xrt is None:
-        return False, False
-
-    def _safe_btn(attr):
-        try:
-            fn = getattr(xrt, attr)
-            return bool(fn())
-        except Exception:
-            return False
-
-    left = _safe_btn("get_left_axis_click")
-    right = _safe_btn("get_right_axis_click")
-    return left, right
+    """Both stick clicks (left, right)."""
+    ctrl = _controls(reader)
+    return (
+        _pressed(ctrl.get("left_thumbstick_click", 0.0)),
+        _pressed(ctrl.get("right_thumbstick_click", 0.0)),
+    )
 
 
 def get_face_buttons(reader=None):
-    """Fetch primary face buttons A and X. Returns (a_pressed, x_pressed)."""
-    if isinstance(reader, _ISAAC_TELEOP_READERS):
-        ctrl = reader.get_controller_data()
-        if ctrl is None:
-            return False, False
-        return (
-            float(ctrl.get("right_primary_click", 0.0)) > 0.5,
-            float(ctrl.get("left_primary_click", 0.0)) > 0.5,
-        )
-    if xrt is None:
-        return False, False
-    try:
-        a_pressed = bool(xrt.get_A_button())
-        x_pressed = bool(xrt.get_X_button())
-        return a_pressed, x_pressed
-    except Exception:
-        return False, False
+    """Primary face buttons A and X. Returns (a_pressed, x_pressed)."""
+    ctrl = _controls(reader)
+    return (
+        _pressed(ctrl.get("right_primary_click", 0.0)),
+        _pressed(ctrl.get("left_primary_click", 0.0)),
+    )
 
 
 def get_abxy_buttons(reader=None):
-    """Fetch A,B,X,Y face buttons as booleans (a,b,x,y)."""
-    if isinstance(reader, _ISAAC_TELEOP_READERS):
-        ctrl = reader.get_controller_data()
-        if ctrl is None:
-            return False, False, False, False
-        return (
-            float(ctrl.get("right_primary_click", 0.0)) > 0.5,
-            float(ctrl.get("right_secondary_click", 0.0)) > 0.5,
-            float(ctrl.get("left_primary_click", 0.0)) > 0.5,
-            float(ctrl.get("left_secondary_click", 0.0)) > 0.5,
-        )
-    if xrt is None:
-        return False, False, False, False
-    try:
-        a_pressed = bool(xrt.get_A_button())
-        b_pressed = bool(xrt.get_B_button())
-        x_pressed = bool(xrt.get_X_button())
-        y_pressed = bool(xrt.get_Y_button())
-        return a_pressed, b_pressed, x_pressed, y_pressed
-    except Exception:
-        return False, False, False, False
+    """A, B, X, Y face buttons as booleans (a, b, x, y)."""
+    ctrl = _controls(reader)
+    return (
+        _pressed(ctrl.get("right_primary_click", 0.0)),
+        _pressed(ctrl.get("right_secondary_click", 0.0)),
+        _pressed(ctrl.get("left_primary_click", 0.0)),
+        _pressed(ctrl.get("left_secondary_click", 0.0)),
+    )
 
 
 def compute_hand_joints_from_inputs(
@@ -800,104 +601,6 @@ def _interp_pose_axis_angle(
     return out_pose
 
 
-class PicoReader:
-    """
-    Background reader that pulls Pico/XRT data as fast as possible and computes dt/FPS.
-    """
-
-    def __init__(self, max_queue_size: int = 15):
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._last_t = None
-        self._fps_ema = 0.0
-        self._last_stamp_ns = None
-        self._latest = None
-        self._lock = threading.Lock()
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        self._thread.join(timeout=1.0)
-
-    def get_latest(self):
-        with self._lock:
-            return self._latest
-
-    @property
-    def disconnected(self) -> bool:
-        return False
-
-    def clear_disconnect(self):
-        pass
-
-    def get_timestamp_ns(self) -> int:
-        if xrt is None:
-            return 0
-        return int(xrt.get_time_stamp_ns())
-
-    def get_input_timestamp_ns(self) -> int:
-        return self.get_timestamp_ns()
-
-    def get_tracking(self) -> input_readers.Tracking:
-        """XRoboToolkit reports body tracking only."""
-        sample = self.get_latest()
-        fresh = (
-            sample is not None
-            and time.monotonic() - sample["timestamp_monotonic"]
-            <= input_readers.INPUT_STALE_AFTER_S
-        )
-        return input_readers.Tracking(body=fresh)
-
-    def get_three_point_body(self):
-        """``("body", (24, 7) array)`` while the body is tracked, else None."""
-        if not self.get_tracking().body:
-            return None
-        return "body", self.get_latest()["body_poses_np"]
-
-    def _run(self):
-        last_report = time.time()
-        while not self._stop.is_set():
-            if not xrt.is_body_data_available():
-                time.sleep(0.001)
-                continue
-            stamp_ns = xrt.get_time_stamp_ns()
-            prev_stamp_ns = self._last_stamp_ns
-            if prev_stamp_ns is not None and stamp_ns == prev_stamp_ns:
-                time.sleep(0.000001)
-                continue
-            # Compute device-based dt/fps using timestamp deltas (ns -> s)
-            device_dt = ((stamp_ns - prev_stamp_ns) * 1e-9) if prev_stamp_ns is not None else 0.0
-            if device_dt > 0.0:
-                inst = 1.0 / device_dt
-                self._fps_ema = inst if self._fps_ema == 0.0 else (0.9 * self._fps_ema + 0.1 * inst)
-            self._last_stamp_ns = stamp_ns
-            t_realtime = time.time()
-            t_monotonic = time.monotonic()
-            try:
-                body_poses = xrt.get_body_joints_pose()
-
-                sample = {
-                    "body_poses_np": np.array(body_poses),
-                    "timestamp_realtime": t_realtime,
-                    "timestamp_monotonic": t_monotonic,
-                    "timestamp_ns": stamp_ns,
-                    "dt": device_dt,
-                    "fps": self._fps_ema,
-                }
-                with self._lock:
-                    self._latest = sample
-                now = time.time()
-                if now - last_report >= 5.0:
-                    print(
-                        f"[PicoReader] dt_ts: {device_dt*1000.0:.2f} ms, fps: {self._fps_ema:.2f}"
-                    )
-                    last_report = now
-            except Exception as e:
-                print(f"[PicoReader] read error: {e}")
-
-
 def _pose_stream_common(
     socket,
     buffer_size: int,
@@ -915,15 +618,6 @@ def _pose_stream_common(
     reader=None,
 ):
     """Shared pose streaming loop used by run_pico."""
-    if reader is None:
-        if xrt is None:
-            raise ImportError(
-                "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to run pose streaming."
-            )
-
-        # Create reader and start it
-        reader = PicoReader(max_queue_size=buffer_size)
-        reader.start()
 
     # Create 3-point pose processor with visualization settings
     three_point = ThreePointPose(
@@ -1266,7 +960,7 @@ class PoseStreamer:
     def __init__(
         self,
         socket,
-        reader: "PicoReader | input_readers.IsaacTeleopReader",
+        reader: "input_readers.TrackingReader",
         three_point: ThreePointPose,
         num_frames_to_send: int,
         target_fps: int,
@@ -1590,37 +1284,6 @@ class PoseStreamer:
         self.frame_start = time.time()
 
 
-def _init_input_source(
-    input_source: str,
-    buffer_size: int,
-    isaac_teleop_options: dict | None = None,
-) -> "PicoReader | input_readers.IsaacTeleopReader":
-    """Create and start the requested teleop input source.
-
-    Returns without waiting for any device; readers report what is tracked.
-    ``isaac_teleop_options`` are ``IsaacTeleopClient`` keyword arguments.
-    """
-    if input_source == "isaac-teleop":
-        reader = input_readers.IsaacTeleopReader(
-            max_queue_size=buffer_size, **(isaac_teleop_options or {})
-        )
-        reader.start()
-        print("Using Isaac Teleop (in-process CloudXR / DeviceIO); connect any device.")
-        return reader
-
-    if xrt is None:
-        raise ImportError(
-            "XRoboToolkit SDK not available. Install xrobotoolkit_sdk to run Pico streaming."
-        )
-
-    subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
-    xrt.init()
-
-    reader = PicoReader(max_queue_size=buffer_size)
-    reader.start()
-    return reader
-
-
 def run_pico(
     buffer_size: int = 15,
     port: int = 5556,
@@ -1633,11 +1296,12 @@ def run_pico(
     with_g1_robot: bool = True,
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
-    input_source: str = "xrt",
-    isaac_teleop_options: dict | None = None,
+    zmq_feedback_host: str = "localhost",
+    zmq_feedback_port: int = 5557,
 ):
     """Run body tracking with real-time visualization and ZMQ streaming."""
-    reader = _init_input_source(input_source, buffer_size, isaac_teleop_options)
+    reader = input_readers.TrackingReader(zmq_feedback_host, zmq_feedback_port)
+    reader.start()
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
@@ -1743,7 +1407,7 @@ class PlannerStreamer:
     def __init__(
         self,
         socket,
-        reader: "PicoReader | input_readers.IsaacTeleopReader",
+        reader: "input_readers.TrackingReader",
         three_point: ThreePointPose,
         poll_hz: int = 20,
         zmq_feedback_host: str = "localhost",
@@ -2345,8 +2009,6 @@ def run_pico_manager(
     with_g1_robot: bool = True,
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
-    input_source: str = "xrt",
-    isaac_teleop_options: dict | None = None,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -2354,9 +2016,9 @@ def run_pico_manager(
       A+X: Toggle between planner and pose mode
       A+B+X+Y: Toggle policy start/stop
     """
-    reader = _init_input_source(input_source, buffer_size, isaac_teleop_options)
-
     context = zmq.Context()
+    reader = input_readers.TrackingReader(zmq_feedback_host, zmq_feedback_port, context)
+    reader.start()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
     time.sleep(0.1)
@@ -2432,20 +2094,6 @@ def run_pico_manager(
         print("[Manager] Shutdown complete")
 
 
-def _ipv4_address(value: str) -> str:
-    try:
-        return str(ipaddress.IPv4Address(value))
-    except ValueError as e:
-        raise argparse.ArgumentTypeError(f"not a literal IPv4 address: {value!r}") from e
-
-
-def _udp_port(value: str) -> int:
-    port = int(value)
-    if not 1 <= port <= 65535:
-        raise argparse.ArgumentTypeError(f"UDP port must be in 1..65535, got {port}")
-    return port
-
-
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -2493,25 +2141,9 @@ if __name__ == "__main__":
         help="Run VR 3-point pose visualizer test (reference frames only)",
     )
     parser.add_argument(
-        "--vr3pt_live",
-        action="store_true",
-        help="Capture one frame of VR 3-point pose and visualize with reference frames",
-    )
-    parser.add_argument(
-        "--vr3pt_realtime",
-        action="store_true",
-        help="Run standalone real-time VR 3-point pose visualizer",
-    )
-    parser.add_argument(
         "--vis_vr3pt",
         action="store_true",
         help="Enable inline VR 3-point pose visualization in pose streaming mode",
-    )
-    parser.add_argument(
-        "--vr3pt_hz",
-        type=int,
-        default=10,
-        help="Update rate for real-time VR visualization in Hz (default: 10)",
     )
     parser.add_argument(
         "--no_g1",
@@ -2528,73 +2160,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable SMPL body joint visualization (24 joint spheres) in the VR3pt viewer",
     )
-    parser.add_argument(
-        "--input-source",
-        type=str,
-        default="xrt",
-        choices=["xrt", "isaac-teleop"],
-        help=(
-            "Input source: 'xrt' for XRoboToolkit SDK (default), "
-            "'isaac-teleop' for in-process IsaacTeleop / CloudXR DeviceIO"
-        ),
-    )
-    parser.add_argument(
-        "--body-vendor",
-        default="pico-xr",
-        choices=input_readers.BODY_VENDORS,
-        help="isaac-teleop full-body source: headset body tracking or an Xsens MVN suit",
-    )
-    parser.add_argument(
-        "--xsens-plugin",
-        default=os.environ.get("ISAAC_TELEOP_XSENS_PLUGIN"),
-        help="Path to xsens_full_body_plugin (default: $ISAAC_TELEOP_XSENS_PLUGIN)",
-    )
-    parser.add_argument(
-        "--xsens-address",
-        type=_ipv4_address,
-        help=(
-            "IPv4 address of the one interface the MVN PC reaches (required for xsens). "
-            "The UDP pose stream has no authentication, so do not bind every interface."
-        ),
-    )
-    parser.add_argument(
-        "--xsens-port",
-        type=_udp_port,
-        default=input_readers.XSENS_DEFAULT_PORT,
-        help=f"UDP port MVN Studio streams to (default: {input_readers.XSENS_DEFAULT_PORT})",
-    )
     args = parser.parse_args()
-    isaac_teleop_options = {"body_vendor": args.body_vendor}
-    if args.body_vendor == "xsens":
-        if args.input_source != "isaac-teleop":
-            parser.error("--body-vendor xsens requires --input-source isaac-teleop")
-        if not args.xsens_plugin:
-            parser.error("--body-vendor xsens requires --xsens-plugin or $ISAAC_TELEOP_XSENS_PLUGIN")
-        if args.xsens_address is None:
-            parser.error("--body-vendor xsens requires --xsens-address")
-        isaac_teleop_options.update(
-            xsens_plugin=args.xsens_plugin,
-            xsens_address=args.xsens_address,
-            xsens_port=args.xsens_port,
-        )
 
     # Standalone VR3Pt test modes (exit after finishing)
     if args.vr3pt_test:
         print("Running VR 3-point pose visualizer test...")
         run_vr3pt_visualizer_test()
         print("VR 3-point pose visualizer test completed")
-        exit(0)
-
-    if args.vr3pt_live:
-        print("Running VR 3-point pose live capture...")
-        run_vr3pt_live_visualizer()
-        print("VR 3-point pose live visualizer completed")
-        exit(0)
-
-    if args.vr3pt_realtime:
-        print("Running VR 3-point pose real-time visualizer...")
-        run_vr3pt_realtime_visualizer(update_hz=args.vr3pt_hz)
-        print("VR 3-point pose real-time visualizer completed")
         exit(0)
 
     # Main execution modes
@@ -2616,8 +2188,6 @@ if __name__ == "__main__":
             with_g1_robot=with_g1_robot,
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
-            input_source=args.input_source,
-            isaac_teleop_options=isaac_teleop_options,
         )
     else:
         # Run legacy single-thread pose streaming
@@ -2633,6 +2203,6 @@ if __name__ == "__main__":
             with_g1_robot=with_g1_robot,
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
-            input_source=args.input_source,
-            isaac_teleop_options=isaac_teleop_options,
+            zmq_feedback_host=args.zmq_feedback_host,
+            zmq_feedback_port=args.zmq_feedback_port,
         )

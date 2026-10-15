@@ -17,7 +17,6 @@ from scipy.spatial.transform import Rotation
 
 from gear_sonic.scripts import pico_manager_thread_server as server
 from gear_sonic.tests.teleop import fakes
-from gear_sonic.utils.teleop.input_readers import IsaacTeleopReader
 
 URDF = Path(server.__file__).parents[1] / "data/robots/g1/g1_29dof_with_hand.urdf"
 MS = 1_000_000
@@ -143,9 +142,11 @@ def _three_point_body(
             devices[f"{side}_controller"] = fakes.controller(position, rotation)
         else:
             devices[f"{side}_hand"] = fakes.hand(position, rotation)
-    reader = IsaacTeleopReader(client=fakes.FakeClient())
-    reader._update(
-        fakes.raw(head=fakes.head(heading.apply(HEAD), heading * head_rotation), **devices), T0
+    reader = fakes.reader()
+    fakes.feed(
+        reader,
+        fakes.raw(head=fakes.head(heading.apply(HEAD), heading * head_rotation), **devices),
+        T0,
     )
     kind, body = reader.get_three_point_body()
     assert kind == "headset"
