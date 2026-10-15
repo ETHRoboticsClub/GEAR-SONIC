@@ -6,7 +6,7 @@ feedback socket as the topic ``tracking`` followed by msgpack::
 
     {"sequence": int, "sample_time_ns": int,
      "head": [x, y, z, qx, qy, qz, qw] | None,
-     "left_controller" / "right_controller": {"grip": [7], "aim": [7],
+     "left_controller" / "right_controller": {"grip": [7], "aim": [7] | None,
          "primary", "secondary", "menu", "stick_click": bool,
          "trigger", "squeeze", "stick_x", "stick_y": float} | None,
      "left_hand" / "right_hand": {"positions": [78], "rotations": [104]} | None,
