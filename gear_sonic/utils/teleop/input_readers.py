@@ -194,6 +194,7 @@ class TrackingReader:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._input_advanced = threading.Condition(self._lock)
         self._received_ns: int | None = None
         self._latest: dict[str, Any] | None = None
         self._controllers: dict[str, Any] | None = None
@@ -259,6 +260,13 @@ class TrackingReader:
     def get_input_timestamp_ns(self) -> int:
         """Advances with every frame that tracks anything."""
         with self._lock:
+            return self._input_timestamp_ns
+
+    def wait_for_input(self, seen_ns: int, timeout_s: float) -> int:
+        """Block until the input timestamp moves past ``seen_ns`` or ``timeout_s``
+        passes; returns the input timestamp either way."""
+        with self._input_advanced:
+            self._input_advanced.wait_for(lambda: self._input_timestamp_ns != seen_ns, timeout_s)
             return self._input_timestamp_ns
 
     def get_three_point_body(self) -> tuple[str, np.ndarray] | None:
@@ -335,5 +343,6 @@ class TrackingReader:
             self._three_point = three_point
             if tracking != Tracking():
                 self._input_timestamp_ns = sample_ns
+                self._input_advanced.notify_all()
             if sample is not None:
                 self._latest = sample

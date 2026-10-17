@@ -456,9 +456,7 @@ def planner(monkeypatch):
 
     def make(reader):
         three_point = server.ThreePointPose(robot_model=fakes.FakeRobotModel())
-        return server.PlannerStreamer(
-            socket=None, reader=reader, three_point=three_point, poll_hz=1000
-        )
+        return server.PlannerStreamer(socket=None, reader=reader, three_point=three_point)
 
     return make
 
@@ -491,6 +489,54 @@ def test_planner_sends_on_controller_input_alone(planner):
     fakes.feed(reader, fakes.raw(), T0 + 300 * MS)  # the module lost the controllers
     streamer.run_once(StreamMode.PLANNER)
     assert len(socket.sent) == 2
+
+
+def _turning(right_x, y):
+    return fakes.raw(
+        left_controller=fakes.controller([-0.2, y, -0.3]),
+        right_controller=fakes.controller([0.2, y, -0.3], thumbstick=(right_x, 0.0)),
+    )
+
+
+def _facing_after(planner, frame_times_ms, right_x=1.0):
+    """Planner heading (rad) after one frame at each of ``frame_times_ms``."""
+    reader = fakes.reader()
+    streamer = planner(reader)
+    streamer.socket = fakes.RecordingSocket()
+    for i, t_ms in enumerate(frame_times_ms):
+        fakes.feed(reader, _turning(right_x, 1.0 + 1e-3 * i), T0 + t_ms * MS)
+        streamer.run_once(StreamMode.PLANNER)
+    _, fields = fakes.decode(streamer.socket.sent[-1], b"planner")
+    facing = fields["facing"].reshape(-1)
+    return np.arctan2(facing[1], facing[0])
+
+
+def test_planner_sends_every_fresh_frame_without_waiting(planner, monkeypatch):
+    def no_sleep(_):
+        raise AssertionError("the planner paced itself")
+
+    monkeypatch.setattr(server.time, "sleep", no_sleep)
+    reader = fakes.reader()
+    streamer = planner(reader)
+    streamer.socket = fakes.RecordingSocket()
+    for i in range(9):  # 90 Hz tracking
+        fakes.feed(reader, _turning(0.0, 1.0 + 1e-3 * i), T0 + round(i * 1000 / 90) * MS)
+        streamer.run_once(StreamMode.PLANNER)
+    assert len(streamer.socket.sent) == 9
+
+
+def test_turn_rate_is_independent_of_the_frame_rate(planner):
+    # Right stick fully right for 0.6 s turns right by yaw_gain (1.5 rad/s) * 0.6 s.
+    expected = -1.5 * 0.6
+    at_100_hz = _facing_after(planner, range(0, 601, 10))
+    at_20_hz = _facing_after(planner, range(0, 601, 50))
+    assert at_100_hz == pytest.approx(expected, abs=1e-6)
+    assert at_20_hz == pytest.approx(expected, abs=1e-6)
+
+
+def test_a_tracking_gap_turns_no_further_than_the_stale_limit(planner):
+    # 0.1 s of frames, a 1 s gap, then one frame: the gap counts as 0.2 s.
+    assert _facing_after(planner, [0, 50, 100, 1100]) == pytest.approx(-1.5 * 0.3, abs=1e-6)
 
 
 def test_only_the_buttons_calibrate(planner):

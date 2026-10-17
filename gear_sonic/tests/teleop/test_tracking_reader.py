@@ -1,3 +1,4 @@
+import threading
 import time
 
 import msgpack
@@ -159,6 +160,35 @@ def test_a_frame_without_tracking_does_not_advance_the_input_timestamp():
 
     assert reader.get_input_timestamp_ns() == T0
     assert reader.get_tracking() == Tracking()
+
+
+def test_wait_for_input_returns_at_once_for_input_not_yet_seen():
+    reader = fakes.reader()
+    fakes.feed(reader, _quest(), T0)
+
+    start = time.monotonic()
+    assert reader.wait_for_input(0, timeout_s=5.0) == T0
+    assert time.monotonic() - start < 0.5
+
+
+def test_wait_for_input_wakes_on_the_next_tracked_frame():
+    reader = fakes.reader()
+    fakes.feed(reader, _quest(), T0)
+    threading.Timer(0.05, fakes.feed, (reader, _quest(offset=0.01), T0 + 10 * MS)).start()
+
+    start = time.monotonic()
+    assert reader.wait_for_input(T0, timeout_s=5.0) == T0 + 10 * MS
+    assert time.monotonic() - start < 2.0
+
+
+def test_wait_for_input_times_out_on_frames_that_track_nothing():
+    reader = fakes.reader()
+    fakes.feed(reader, _quest(), T0)
+    threading.Timer(0.01, fakes.feed, (reader, fakes.raw(), T0 + 10 * MS)).start()
+
+    start = time.monotonic()
+    assert reader.wait_for_input(T0, timeout_s=0.1) == T0
+    assert time.monotonic() - start >= 0.1
 
 
 def test_losing_the_body_keeps_its_last_sample_but_not_its_tracking():

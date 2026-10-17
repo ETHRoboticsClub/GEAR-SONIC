@@ -1409,7 +1409,6 @@ class PlannerStreamer:
         socket,
         reader: "input_readers.TrackingReader",
         three_point: ThreePointPose,
-        poll_hz: int = 20,
         zmq_feedback_host: str = "localhost",
         zmq_feedback_port: int = 5557,
     ):
@@ -1420,14 +1419,12 @@ class PlannerStreamer:
             zmq_feedback_host=zmq_feedback_host, zmq_feedback_port=zmq_feedback_port
         )
 
-        self.dt = 1.0 / max(1, poll_hz)
         # Current locomotion mode, default IDLE
         self.mode = LocomotionMode.IDLE
         self.prev_ab = False
         self.prev_xy = False
         # Persistent facing buffer (unit vector on XY plane)
         self.yaw_accumulator = YawAccumulator()
-        self.last_send = time.time()
         self.last_input_timestamp = None
         # 3-point source ("body" or "headset") the current calibration was captured from.
         self.three_point_source: str | None = None
@@ -1507,6 +1504,12 @@ class PlannerStreamer:
             input_timestamp = self.reader.get_input_timestamp_ns()
             if input_timestamp == self.last_input_timestamp:
                 return
+            # Yaw integrates over the sample interval, so turn rate is independent of
+            # the frame rate; a gap longer than the stale limit counts as the limit.
+            input_dt = 0.0
+            if self.last_input_timestamp is not None:
+                input_dt = (input_timestamp - self.last_input_timestamp) * 1e-9
+                input_dt = min(max(input_dt, 0.0), input_readers.INPUT_STALE_AFTER_S)
             self.last_input_timestamp = input_timestamp
 
             # A+B => next mode; X+Y => previous mode (rising edges)
@@ -1526,7 +1529,7 @@ class PlannerStreamer:
             lx, ly, rx, ry = get_controller_axes(self.reader)
 
             # Facing from RIGHT stick: continuous yaw based on rx (right = turn right, left = turn left)
-            facing = self.yaw_accumulator.update(rx, self.dt)
+            facing = self.yaw_accumulator.update(rx, input_dt)
 
             raw_mag = np.hypot(lx, ly)
             raw_mag = np.clip(raw_mag, 0.0, 1.0)
@@ -1618,13 +1621,6 @@ class PlannerStreamer:
             traceback.print_exc()
             raise
 
-        # pacing
-        now = time.time()
-        sleep_t = self.dt - (now - self.last_send)
-        if sleep_t > 0:
-            time.sleep(sleep_t)
-        self.last_send = time.time()
-
 
 def available_modes(tracking: input_readers.Tracking) -> list[StreamMode]:
     """Modes a robot-side mode request may currently target."""
@@ -1679,6 +1675,10 @@ def _next_mode_toward(
 
 
 MODE_REQUEST_TOPIC = b"mode_request"
+
+# The manager steps on every tracking frame. Without one it still polls mode
+# requests and publishes manager_state this often: one 50 Hz policy tick.
+MANAGER_IDLE_PERIOD_S = 0.02
 
 
 def _decode_mode_request(payload: bytes) -> dict | None:
@@ -2055,7 +2055,6 @@ def run_pico_manager(
         socket=socket,
         reader=reader,
         three_point=three_point,
-        poll_hz=20,
         zmq_feedback_host=zmq_feedback_host,
         zmq_feedback_port=zmq_feedback_port,
     )
@@ -2079,8 +2078,10 @@ def run_pico_manager(
     modes = StreamModeManager(socket, reader, pose_streamer, planner_streamer)
     mode_requests = ModeRequestReader(zmq_feedback_host, zmq_feedback_port, context)
     try:
+        seen_input_ns = reader.get_input_timestamp_ns()
         while True:
             modes.step(mode_requests)
+            seen_input_ns = reader.wait_for_input(seen_input_ns, MANAGER_IDLE_PERIOD_S)
 
     except KeyboardInterrupt:
         print("\nStopping manager...")
