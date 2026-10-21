@@ -131,6 +131,24 @@ def test_nothing_received():
     assert reader.get_three_point_body() is None
 
 
+def test_cached_body_does_not_trigger_another_mapping_but_buttons_still_update():
+    reader = fakes.reader()
+    frame = {**_quest(), "body": fakes.body(_body_positions()), "body_update_sequence": 1}
+    fakes.feed(reader, frame, T0)
+    original = reader.get_latest()
+    # A new controller packet carries the same body counter and cached pose.
+    frame["right_controller"]["primary"] = True
+    fakes.feed(reader, frame, T0 + 10 * MS)
+    assert reader.get_input_timestamp_ns() == T0 + 10 * MS
+    assert reader.get_controller_data()["right_primary_click"] == 1.0
+    assert reader.get_latest() is original
+    # Stationary body packets still count as fresh when their SDK counter advances.
+    frame["body_update_sequence"] = 2
+    fakes.feed(reader, frame, T0 + 14 * MS)
+    assert reader.get_timestamp_ns() == T0 + 14 * MS
+    assert reader.get_latest()["dt"] == pytest.approx(0.014)
+
+
 def test_head_alone_tracks_the_head_without_three_points():
     reader = fakes.reader()
     fakes.feed(reader, _quest(head_tracked=False), T0)

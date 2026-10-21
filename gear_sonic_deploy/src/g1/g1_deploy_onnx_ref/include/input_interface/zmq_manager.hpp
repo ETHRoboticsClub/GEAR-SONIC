@@ -156,6 +156,11 @@ class ZMQManager : public InputInterface {
       if (planner_subscriber_) planner_subscriber_->Stop();
     }
 
+    void SetInputWakeup(std::shared_ptr<InputWakeup> wakeup) override {
+      InputInterface::SetInputWakeup(wakeup);
+      pose_interface_->SetInputWakeup(std::move(wakeup));
+    }
+
     void update() override {
       // Reset per-frame flags
       emergency_stop_ = false;

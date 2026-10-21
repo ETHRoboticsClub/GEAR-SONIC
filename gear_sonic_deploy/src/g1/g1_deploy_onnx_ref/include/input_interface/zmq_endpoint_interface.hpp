@@ -88,7 +88,7 @@
 class ZMQEndpointInterface : public InputInterface {
 public:
     /// Compile-time toggle for debug log output.
-    static constexpr bool DEBUG_LOGGING = true;
+    static constexpr bool DEBUG_LOGGING = false;
     
     // ------------------------------------------------------------------
     // Per-frame action flags (reset at the start of every update() call)
@@ -381,15 +381,23 @@ public:
             int frame_offset_adjustment = 0;
             bool did_catchup = false;
             int protocol_version_for_mode_update = -1;
+            std::chrono::steady_clock::time_point received_at, prepare_started;
             {
                 std::lock_guard<std::mutex> lock(data_mutex_);
                 if (has_new_data_) {
                     has_new_data_ = false; // consumed
+                    prepare_started = std::chrono::steady_clock::now();
+                    received_at = last_receive_time_.value_or(prepare_started);
                     if constexpr (DEBUG_LOGGING) {
                         std::cout << "[ZMQEndpointInterface] *** Starting ZMQ processing ***" << std::endl;
                     }
                     // Decode into a new MotionSequence with current playback position
-                    auto result = DecodeIntoMotionSequence(current_frame, streamed_motion_, stream_window_start_, heading_state_buffer);
+                    int playback_frame;
+                    {
+                        std::lock_guard<std::mutex> motion_lock(current_motion_mutex);
+                        playback_frame = current_frame;
+                    }
+                    auto result = DecodeIntoMotionSequence(playback_frame, streamed_motion_, stream_window_start_, heading_state_buffer);
                     
                     // Handle Protocol v4 (token-only) - no motion, just tokens
                     if (result.protocol_version == 4) {
@@ -440,7 +448,7 @@ public:
                     
                         
                         new_motion = result.motion;
-                        std::cout << "[ZMQEndpointInterface] motion name: " << new_motion->name << std::endl;
+                        if (verbose_) std::cout << "[ZMQEndpointInterface] motion name: " << new_motion->name << std::endl;
                         stream_window_start_ = result.window_start;
                         frame_offset_adjustment = result.frame_offset_adjustment;
                         did_catchup = result.did_catchup_reset;
@@ -480,6 +488,7 @@ public:
                 } else {
                     // Normal case: Adjust current_frame to maintain global playback position after window shift
                     // current_frame represents "the next frame to be read" (not yet consumed)
+                    std::lock_guard<std::mutex> lock(current_motion_mutex);
                     int adjusted_frame = current_frame - frame_offset_adjustment;
                     
                     // Validate the adjustment doesn't cause discontinuities due to clamping
@@ -499,12 +508,29 @@ public:
                         adjusted_frame = (streamed_motion_->timesteps > 0) ? (streamed_motion_->timesteps - 1) : 0;
                     }
                     
-                    std::lock_guard<std::mutex> lock(current_motion_mutex);
                     current_frame = adjusted_frame;
                     current_motion = streamed_motion_;  // Assign shared_ptr directly for thread safety
                     operator_state.play = true; // Auto-play when entering ZMQ mode
                 }
-                
+                const auto prepared_at = std::chrono::steady_clock::now();
+                const double wake_ms = std::chrono::duration<double, std::milli>(prepare_started - received_at).count();
+                const double work_ms = std::chrono::duration<double, std::milli>(prepared_at - prepare_started).count();
+                timing_wake_sum_ms_ += wake_ms;
+                timing_work_sum_ms_ += work_ms;
+                timing_wake_max_ms_ = std::max(timing_wake_max_ms_, wake_ms);
+                timing_work_max_ms_ = std::max(timing_work_max_ms_, work_ms);
+                ++timing_samples_;
+                if (prepared_at - timing_report_at_ >= std::chrono::seconds(5)) {
+                    std::cout << "[Stream preparation] n=" << timing_samples_
+                              << " receive->worker mean/max=" << timing_wake_sum_ms_ / timing_samples_
+                              << "/" << timing_wake_max_ms_
+                              << " ms; decode+publish mean/max=" << timing_work_sum_ms_ / timing_samples_
+                              << "/" << timing_work_max_ms_ << " ms" << std::endl;
+                    timing_report_at_ = prepared_at;
+                    timing_samples_ = 0;
+                    timing_wake_sum_ms_ = timing_work_sum_ms_ = 0;
+                    timing_wake_max_ms_ = timing_work_max_ms_ = 0;
+                }
             }
             return; // Skip keyboard motion controls when in ZMQ mode
         }
@@ -1800,17 +1826,19 @@ private:
      *
      * Copies the received header and buffer data into `buffered_header_` /
      * `buffered_buffers_` under `data_mutex_` and sets `has_new_data_` = true.
-     * The actual decoding happens later on the main thread in handle_input().
+     * Wake the input worker immediately when configured. Decoding runs there,
+     * and publishes a completed motion snapshot for the next policy tick.
      */
     void OnPoseDataReceived(
         const std::string& topic,
         const ZMQPackedMessageSubscriber::DecodedHeader& hdr,
         const std::vector<ZMQPackedMessageSubscriber::BufferView>& bufs) {
         
+        {
         std::lock_guard<std::mutex> lock(data_mutex_);
         
         // Print message received info
-        std::cout << "[ZMQEndpointInterface] Received ZMQ message - topic: '" << topic 
+        if (verbose_) std::cout << "[ZMQEndpointInterface] Received ZMQ message - topic: '" << topic
                   << "', protocol_version: " << hdr.version 
                   << ", num_fields: " << hdr.fields.size() 
                   << ", total_size: " << bufs.size() << " buffers" << std::endl;
@@ -1828,6 +1856,8 @@ private:
         has_new_data_ = true;
         last_receive_time_ = std::chrono::steady_clock::now();
         receive_count_++;
+        }
+        NotifyInputReady();
     }
     
     // ------------------------------------------------------------------
@@ -1859,6 +1889,11 @@ private:
     std::optional<std::chrono::steady_clock::time_point> last_receive_time_{}; ///< Timestamp of last OnPoseDataReceived (ms, monotonic).
     uint64_t receive_count_ = 0;       ///< Total number of messages received.
     uint64_t last_decode_time_ = 0;    ///< Timestamp of last DecodeIntoMotionSequence call (ms).
+    // Input-worker-only diagnostics; exclude policy inference and headset transport.
+    std::chrono::steady_clock::time_point timing_report_at_ = std::chrono::steady_clock::now();
+    size_t timing_samples_ = 0;
+    double timing_wake_sum_ms_ = 0, timing_work_sum_ms_ = 0;
+    double timing_wake_max_ms_ = 0, timing_work_max_ms_ = 0;
     
 };
 

@@ -1,0 +1,79 @@
+{
+  "seconds": 60.00445205899814,
+  "rates_hz": {
+    "manager_state": 77.89,
+    "g1_debug": 50.01,
+    "tracking": 77.34,
+    "pose": 35.3,
+    "robot_config": 0.5
+  },
+  "modes": {
+    "1": 3308,
+    "2": 1366
+  },
+  "tracking": {
+    "(True, True, True, True)": 4641
+  },
+  "changed_rates_hz": {
+    "head": 71.88,
+    "left_controller": 70.59,
+    "right_controller": 61.18,
+    "body": 71.78
+  },
+  "changed_gap_ms": {
+    "head": {
+      "p50": 13.773,
+      "p95": 19.058,
+      "max": 52.031
+    },
+    "left_controller": {
+      "p50": 13.772,
+      "p95": 19.08,
+      "max": 870.957
+    },
+    "right_controller": {
+      "p50": 13.78,
+      "p95": 19.058,
+      "max": 8591.735
+    },
+    "body": {
+      "p50": 13.781,
+      "p95": 19.058,
+      "max": 52.031
+    }
+  },
+  "relay_age_ms": {
+    "p50": 0.544,
+    "p95": 1.091,
+    "max": 3.657
+  },
+  "sim_realtime_factor": 0.9717716706609221,
+  "matched_feedback": 1776,
+  "feedback_total": 3001,
+  "manager_receipt_to_publication_ms": {
+    "p50": 9.129,
+    "p95": 11.06,
+    "max": 18.066
+  },
+  "pose_publication_to_current_reference_ms": {
+    "p50": 75.002,
+    "p95": 83.461,
+    "max": 129.19
+  },
+  "manager_receipt_to_current_reference_ms": {
+    "p50": 84.017,
+    "p95": 91.05,
+    "max": 137.66
+  },
+  "resampled_reference_time_to_feedback_ms": {
+    "p50": 90.402,
+    "p95": 93.71,
+    "max": 147.561
+  },
+  "latest_published_minus_reference_frames": {
+    "p50": 3.0,
+    "p95": 4.0,
+    "max": 5.0
+  },
+  "note": "Reference ages, not human-motion-to-visible-robot latency. Encoder also reads three later frames."
+}

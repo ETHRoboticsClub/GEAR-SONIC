@@ -201,6 +201,9 @@ uv.lock
 .venv_camera/
 .venv_inference/
 
+# PC-local simulation dependencies, environments, and raw latency captures
+/.local/
+
 # XRoboToolkit-PC-Service-Pybind
 xrobotoolkit_sdk.cpython-*-*-*.so
 teleop_vids/

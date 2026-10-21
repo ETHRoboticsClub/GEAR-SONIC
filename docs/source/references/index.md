@@ -4,6 +4,7 @@ These pages contain the original standalone documentation that previously lived 
 
 - [Training Code Structure](training_code.md) — training codebase architecture, pipeline flow, configuration system, and key classes
 - [Deployment Code & Program Flow](deployment_code.md) — CLI arguments, logging, observation config, and visualization tools
+- [Pico Tracking to G1 Motor Commands](pico_to_robot_pipeline.md) — ETHRC and standalone data paths, API streaming, sampling rates, encoder/decoder tensors, and motor command semantics
 - [Observation Configuration](observation_config.md) — YAML config format, all observation types with dimensions, and how to create custom observations
 - [Motion Reference Data](motion_reference.md) — reference motion file format, conversion, verification, and usage
 - [Kinematic Planner ONNX Model](planner_onnx.md) — detailed input/output specification for the ONNX-exported kinematic planner

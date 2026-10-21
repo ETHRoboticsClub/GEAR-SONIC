@@ -599,14 +599,13 @@ class BaseSimulator:
         """Main simulation loop"""
         sim_cnt = 0
         ts = time.time()
+        next_step = time.monotonic()
 
         try:
             while self._running and (
                 (self.sim_env.viewer and self.sim_env.viewer.is_running())
                 or (self.sim_env.viewer is None)
             ):
-                step_start = time.monotonic()
-
                 self.sim_env.sim_step()
                 now = time.time()
                 if now - ts > 1 / 10.0 and self.redis_client is not None:
@@ -624,9 +623,13 @@ class BaseSimulator:
                 if sim_cnt % int(self.image_dt / self.sim_dt) == 0:
                     self.sim_env.update_render_caches()
 
-                # Simple rate limiter (replaces ROS rate)
-                elapsed = time.monotonic() - step_start
-                sleep_time = self.sim_dt - elapsed
+                # Keep physics aligned to wall time across occasional slow viewer
+                # updates. Restarting the period on every step makes those updates
+                # permanently slow the simulation. Bound catch-up after a long
+                # pause so it cannot trigger a burst of obsolete simulation steps.
+                now_monotonic = time.monotonic()
+                next_step = max(next_step + self.sim_dt, now_monotonic - self.sim_dt)
+                sleep_time = next_step - now_monotonic
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 

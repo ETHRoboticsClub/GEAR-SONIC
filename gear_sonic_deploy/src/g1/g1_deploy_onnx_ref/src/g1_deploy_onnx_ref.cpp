@@ -92,6 +92,7 @@
 
 // Observation configuration
 #include "../include/observation_config.hpp"
+#include "../include/stream_playback.hpp"
 
 // New Planner Classes
 #include "../include/localmotion_kplanner.hpp"
@@ -216,6 +217,7 @@ class G1Deploy {
     std::shared_ptr<const MotionSequence> current_motion_ = nullptr;
     int current_frame_ = 0;
     int saved_frame_for_observation_window_ = 0; // for observation window
+    int stream_lookahead_frames_ = 0; // 0: sequential playback; >0: newest complete window
     std::mutex current_motion_mutex_; // for current motion and frame synchronization
     
     // =========================================================================
@@ -275,6 +277,8 @@ class G1Deploy {
     ChannelSubscriberPtr<LowState_> lowstate_subscriber_;
     ChannelSubscriberPtr<IMUState_> imutorso_subscriber_;
     ThreadPtr input_thread_ptr_, command_writer_ptr_, control_thread_ptr_, planner_thread_ptr_;
+    std::shared_ptr<InputWakeup> input_wakeup_;
+    std::thread immediate_input_thread_;
     
     // =========================================================================
     // External clients and peripheral managers
@@ -2180,10 +2184,13 @@ class G1Deploy {
       bool enable_motion_recording = false,
       std::array<double, 3> initial_compliance = {0.05, 0.05, 0.0},
       double initial_max_close_ratio = 1.0,
-      MotorGainScaleConfig motor_gain_scales = {})
+      MotorGainScaleConfig motor_gain_scales = {},
+      int stream_lookahead_frames = 0,
+      bool immediate_stream_input = false)
       : time_(0.0),
         publish_dt_(0.002),
         control_dt_(0.02),
+        stream_lookahead_frames_(stream_lookahead_frames),
         planner_dt_(0.1),
         input_dt_(0.01),
         duration_(3.0),
@@ -2610,7 +2617,16 @@ class G1Deploy {
       }
 
       // create threads
-      input_thread_ptr_ = CreateRecurrentThreadEx("Input", UT_CPU_ID_NONE, input_dt_ * 1e6, &G1Deploy::Input, this);
+      if (immediate_stream_input) {
+        input_wakeup_ = std::make_shared<InputWakeup>();
+        input_interface_->SetInputWakeup(input_wakeup_);
+        immediate_input_thread_ = std::thread([this] {
+          while (input_wakeup_->Wait(std::chrono::milliseconds(10))) Input();
+        });
+        std::cout << "[INFO] Immediate stream preparation enabled; policy remains 50 Hz" << std::endl;
+      } else {
+        input_thread_ptr_ = CreateRecurrentThreadEx("Input", UT_CPU_ID_NONE, input_dt_ * 1e6, &G1Deploy::Input, this);
+      }
       command_writer_ptr_ = CreateRecurrentThreadEx("command_writer", UT_CPU_ID_NONE, publish_dt_ * 1e6,
                                                     &G1Deploy::LowCommandWriter, this);
       control_thread_ptr_ =
@@ -2626,7 +2642,13 @@ class G1Deploy {
 
     ~G1Deploy()
     {
+      StopImmediateInput();
       // CUDA resources are now cleaned up by the PolicyEngine and planner classes automatically
+    }
+
+    void StopImmediateInput() {
+      if (input_wakeup_) input_wakeup_->Stop();
+      if (immediate_input_thread_.joinable()) immediate_input_thread_.join();
     }
 
     void SetThreadPriority() {
@@ -2718,10 +2740,13 @@ class G1Deploy {
     /// Gracefully stop all threads and send a damping-only command.
     void Stop() {
       operator_state.stop = true;
+      StopImmediateInput();
 
       if (control_thread_ptr_) {
-        input_thread_ptr_->Wait();
-        input_thread_ptr_.reset();
+        if (input_thread_ptr_) {
+          input_thread_ptr_->Wait();
+          input_thread_ptr_.reset();
+        }
         control_thread_ptr_->Wait();
         control_thread_ptr_.reset();
         command_writer_ptr_->Wait();
@@ -3407,6 +3432,15 @@ class G1Deploy {
       // Update motion frame playback for non-planner motion
       bool use_planner_motion = (current_motion_ && current_motion_ == planner_motion_);
       if (!use_planner_motion && current_motion_ && current_motion_->timesteps > 0 && operator_state.play) {
+        if (current_motion_->name == "streamed") {
+          // Latest-window mode selects its cursor under the observation lock at
+          // the start of each tick. No packet means holding the same window.
+          if (stream_lookahead_frames_ == 0) {
+            current_frame_ = AdvanceStreamFrame(current_frame_, current_motion_->timesteps,
+                                                saved_frame_for_observation_window_);
+          }
+          return true;
+        }
         // Update display motion current frame
         current_frame_++;
         // Check if motion completed (reached the end)
@@ -3424,11 +3458,6 @@ class G1Deploy {
             // Total reset: both base quaternion and delta heading
             reinitialize_heading_ = true;
             std::cout << "Reset to frame 0." << std::endl;
-          }
-        } else {
-          if (current_frame_ >= current_motion_->timesteps - saved_frame_for_observation_window_) {
-            current_frame_ = current_frame_ - 1;
-            std::cout << "Motion " << current_motion_->name << " completed and waiting following motion" << std::endl;                    
           }
         }
       }
@@ -3943,6 +3972,14 @@ class G1Deploy {
           std::shared_ptr<const MotionSequence> current_motion_copy = nullptr;
           {
             std::lock_guard<std::mutex> lock(current_motion_mutex_);
+            const bool latest_stream = stream_lookahead_frames_ > 0 && operator_state.play &&
+                                       current_motion_ && current_motion_->name == "streamed";
+            if (latest_stream) {
+              const auto latest = NewestCompleteStreamFrame(current_motion_->timesteps,
+                                                            stream_lookahead_frames_);
+              if (!latest) return; // Hold the last motor command until context is complete.
+              current_frame_ = *latest;
+            }
             current_frame_copy = current_frame_;
             current_motion_copy = current_motion_;
             current_encoder_mode_copy = current_motion_copy->GetEncodeMode();
@@ -3960,6 +3997,15 @@ class G1Deploy {
             if (!GatherObservations()) {
               std::cout << "✗ Error: Failed to gather observations in the middle of the control loop!" << std::endl;
               std::cout << "Stopping control system." << std::endl;
+              operator_state.stop = true;
+              return;
+            }
+            // Never silently shorten the context expected by a different model
+            // or encoder mode. Validate before producing a motor command.
+            if (latest_stream && saved_frame_for_observation_window_ > stream_lookahead_frames_) {
+              std::cerr << "[ERROR] --stream-lookahead-frames=" << stream_lookahead_frames_
+                        << " is smaller than the active observation horizon "
+                        << saved_frame_for_observation_window_ << std::endl;
               operator_state.stop = true;
               return;
             }
@@ -4181,6 +4227,8 @@ int main(int argc, char const* argv[]) {
     std::cout << "  --zmq-verbose: enable ZMQ subscriber verbose logs" << std::endl;
     std::cout << "  --zmq-out-port <port>: ZMQ port for output (default: 5557)" << std::endl;
     std::cout << "  --zmq-out-topic <topic>: ZMQ topic/prefix for output (default: g1_debug)" << std::endl;
+    std::cout << "  --stream-lookahead-frames <N>: Follow the newest complete N-frame streamed window (default: sequential playback)" << std::endl;
+    std::cout << "  --immediate-stream-input: Wake ZMQ preparation on packet arrival (zmq/zmq_manager only); retain 50 Hz policy" << std::endl;
     std::cout << "  --logs-dir <path>: optional logs output base directory (default: logs/<timestamp>/)" << std::endl;
     std::cout << "  --enable-csv-logs: enable writing CSV logs (default: OFF)" << std::endl;
     std::cout << "  --enable-motion-recording: enable motion recording for ZMQ/planner (default: OFF)" << std::endl;
@@ -4234,8 +4282,27 @@ int main(int argc, char const* argv[]) {
   std::array<double, 3> initial_compliance = {0.5, 0.5, 0.0}; // initial compliance is 0.5 for both hands (keyboard controllable)
   double initial_max_close_ratio = 1.0; // default allows full closure, use --max-close-ratio to limit
   MotorGainScaleConfig motor_gain_scales;
+  int stream_lookahead_frames = 0;
+  bool immediate_stream_input = false;
   for (int i = 4; i < argc; i++) {
-    if (std::string(argv[i]) == "--disable-crc-check") {
+    if (std::string(argv[i]) == "--stream-lookahead-frames") {
+      if (i + 1 >= argc) {
+        std::cerr << "Error: --stream-lookahead-frames requires a positive integer" << std::endl;
+        return 1;
+      }
+      try {
+        const std::string value = argv[++i];
+        size_t used = 0;
+        stream_lookahead_frames = std::stoi(value, &used);
+        if (used != value.size() || stream_lookahead_frames < 1) throw std::invalid_argument("horizon");
+      } catch (const std::exception&) {
+        std::cerr << "Error: --stream-lookahead-frames requires a positive integer" << std::endl;
+        return 1;
+      }
+      std::cout << "[INFO] Latest streamed window: " << stream_lookahead_frames << " frames" << std::endl;
+    } else if (std::string(argv[i]) == "--immediate-stream-input") {
+      immediate_stream_input = true;
+    } else if (std::string(argv[i]) == "--disable-crc-check") {
       disableCrcCheck = true;
       std::cout << "[INFO] CRC checking disabled for MuJoCo simulation" << std::endl;
     } else if (std::string(argv[i]) == "--obs-config") {
@@ -4476,6 +4543,10 @@ int main(int argc, char const* argv[]) {
     }
   }
 
+  if (immediate_stream_input && inputType != "zmq" && inputType != "zmq_manager") {
+    std::cerr << "--immediate-stream-input requires --input-type zmq or zmq_manager" << std::endl;
+    return 1;
+  }
   std::cout << "[DEBUG] Creating G1Deploy object..." << std::endl;
   G1Deploy custom(
     networkInterface,
@@ -4506,7 +4577,9 @@ int main(int argc, char const* argv[]) {
     enableMotionRecording,
     initial_compliance,
     initial_max_close_ratio,
-    motor_gain_scales
+    motor_gain_scales,
+    stream_lookahead_frames,
+    immediate_stream_input
   );
   std::cout << "[DEBUG] G1Deploy object created successfully!" << std::endl;
   
