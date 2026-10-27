@@ -1,0 +1,154 @@
+{
+  "sample_count": 2994,
+  "feedback_total": 3000,
+  "modes": {
+    "1": 5626
+  },
+  "capture_seconds": 60.0002587529998,
+  "pose_segments": 1,
+  "selected_pose_seconds": 60.0002587529998,
+  "timings": {
+    "bridge_to_capture_ms": {
+      "p50": 0.27,
+      "p95": 0.406,
+      "max": 0.829
+    },
+    "bridge_poll_interval_reported_max_ms": {
+      "p50": 1.36,
+      "p95": 1.471,
+      "max": 1.729
+    },
+    "sdk_counter_read_reported_max_ms": {
+      "p50": 0.003,
+      "p95": 0.04,
+      "max": 0.137
+    },
+    "smpl_mapping_ms": {
+      "p50": 2.379,
+      "p95": 2.769,
+      "max": 3.478
+    },
+    "pose_preparation_ms": {
+      "p50": 4.288,
+      "p95": 4.803,
+      "max": 5.694
+    },
+    "other_pose_preparation_ms": {
+      "p50": 1.876,
+      "p95": 2.253,
+      "max": 3.311
+    },
+    "reader_to_mapping_start_ms": {
+      "p50": 0.263,
+      "p95": 0.356,
+      "max": 3.345
+    },
+    "packing_transport_monitor_ms": {
+      "p50": 0.168,
+      "p95": 0.298,
+      "max": 1.058
+    },
+    "reference_publication_to_complete_window_ms": {
+      "p50": 56.973,
+      "p95": 67.077,
+      "max": 76.711
+    },
+    "complete_window_publication_to_feedback_ms": {
+      "p50": 9.461,
+      "p95": 28.118,
+      "max": 51.063
+    },
+    "newest_encoder_sample_receipt_to_feedback_ms": {
+      "p50": 14.265,
+      "p95": 32.924,
+      "max": 56.194
+    },
+    "newest_encoder_sample_receipt_to_publication_ms": {
+      "p50": 4.748,
+      "p95": 5.297,
+      "max": 7.907
+    },
+    "oldest_reference_receipt_to_feedback_ms": {
+      "p50": 71.968,
+      "p95": 95.092,
+      "max": 112.253
+    }
+  },
+  "intervals": {
+    "policy_feedback": {
+      "count": 3000,
+      "gap_ms": {
+        "p50": 19.962,
+        "p95": 22.671,
+        "max": 24.524
+      },
+      "percent_over_20ms": 45.749,
+      "percent_over_30ms": 0.0
+    },
+    "fresh_head": {
+      "count": 5382,
+      "gap_ms": {
+        "p50": 11.067,
+        "p95": 15.35,
+        "max": 39.957
+      },
+      "percent_over_20ms": 0.688,
+      "percent_over_30ms": 0.112
+    },
+    "fresh_left": {
+      "count": 5382,
+      "gap_ms": {
+        "p50": 11.067,
+        "p95": 15.35,
+        "max": 39.957
+      },
+      "percent_over_20ms": 0.688,
+      "percent_over_30ms": 0.112
+    },
+    "fresh_right": {
+      "count": 5382,
+      "gap_ms": {
+        "p50": 11.067,
+        "p95": 15.35,
+        "max": 39.957
+      },
+      "percent_over_20ms": 0.688,
+      "percent_over_30ms": 0.112
+    },
+    "fresh_body": {
+      "count": 5380,
+      "gap_ms": {
+        "p50": 11.071,
+        "p95": 15.351,
+        "max": 39.957
+      },
+      "percent_over_20ms": 0.688,
+      "percent_over_30ms": 0.112
+    },
+    "pose": {
+      "count": 2991,
+      "gap_ms": {
+        "p50": 21.18,
+        "p95": 28.287,
+        "max": 52.298
+      },
+      "percent_over_20ms": 62.475,
+      "percent_over_30ms": 2.876
+    }
+  },
+  "tracking_frames": 5618,
+  "tracking_missing_frames": {
+    "head": 0,
+    "left": 0,
+    "right": 0,
+    "body": 0
+  },
+  "sdk_updates_skipped_by_observer": {
+    "head": 11,
+    "left": 11,
+    "right": 11,
+    "body": 13
+  },
+  "quality_notes": [],
+  "note": "Receipt is PC manager receipt, not headset capture. Feedback is received after action calculation; does not measure DDS delivery or visible response. Pose preparation includes SMPL; do not add them. SMPL statistics cover published packets. Modes other than POSE disable reference matching. SDK counter jumps can reflect bridge/observer coalescing, not necessarily network packet loss."
+}

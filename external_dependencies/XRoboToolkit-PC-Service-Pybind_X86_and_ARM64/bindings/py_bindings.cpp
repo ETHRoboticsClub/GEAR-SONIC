@@ -7,6 +7,7 @@
 #include <sstream>
 #include <array>
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <nlohmann/json.hpp>
 #include "PXREARobotSDK.h"
@@ -74,6 +75,17 @@ uint64_t LeftUpdateSequence = 0;
 uint64_t RightUpdateSequence = 0;
 uint64_t HeadUpdateSequence = 0;
 uint64_t BodyUpdateSequence = 0;
+int64_t BodyFrameUnixNs = 0;
+int64_t BodyReceiptMonotonicNs = 0;
+int64_t BodyReceiptUnixNs = 0;
+
+std::map<std::string, int64_t> getBodyInputTiming() {
+    std::lock_guard<std::mutex> lock(bodyMutex);
+    return {{"body_sequence", static_cast<int64_t>(BodyUpdateSequence)},
+            {"headset_frame_unix_ns", BodyFrameUnixNs},
+            {"sdk_receipt_monotonic_ns", BodyReceiptMonotonicNs},
+            {"sdk_receipt_unix_ns", BodyReceiptUnixNs}};
+}
 
 std::map<std::string, uint64_t> getInputUpdateSequences() {
     std::scoped_lock lock(leftMutex, rightMutex, headsetPoseMutex, bodyMutex);
@@ -107,6 +119,10 @@ std::array<double, 6> stringToVelocityArray(const std::string& velocityStr) {
 
 void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int status, void* userData)
 {
+    const int64_t receipt_mono_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const int64_t receipt_unix_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
     switch (type)
     {
     case PXREAServerConnect:
@@ -238,7 +254,12 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                             }
                             
                             BodyDataAvailable = true;
-                            if (jointCount == 24) ++BodyUpdateSequence;
+                            if (jointCount == 24) {
+                                ++BodyUpdateSequence;
+                                BodyFrameUnixNs = value.value("timeStampNs", int64_t{0});
+                                BodyReceiptMonotonicNs = receipt_mono_ns;
+                                BodyReceiptUnixNs = receipt_unix_ns;
+                            }
                         }
                     }
                 }
@@ -537,6 +558,8 @@ PYBIND11_MODULE(xrobotoolkit_sdk, m) {
     m.def("get_time_stamp_ns", &getTimeStampNs, "Get the timestamp in nanoseconds.");
     m.def("get_input_update_sequences", &getInputUpdateSequences,
           "Per-device receipt counters (head, left, right, body); zero means never received.");
+    m.def("get_body_input_timing", &getBodyInputTiming,
+          "Body receipt sequence, headset message wall timestamp and PC callback clocks; clocks are not synchronized.");
     m.def("get_left_hand_tracking_state", &getLeftHandTrackingState, "Get the left hand state.");
     m.def("get_right_hand_tracking_state", &getRightHandTrackingState, "Get the right hand state.");
     m.def("get_left_hand_is_active", &getLeftHandIsActive, "Get the left hand tracking quality (0 = low, 1 = high).");

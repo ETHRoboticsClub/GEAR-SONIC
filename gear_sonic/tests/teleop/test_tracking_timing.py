@@ -97,3 +97,18 @@ def test_remote_readers_and_startup_are_quiet(caplog):
     feed(1000, 1, sent_ms=-100000)  # Arbitrary remote monotonic clock.
     reader.warn_if_tracking_delayed()
     assert not timing_warnings(caplog)
+
+
+def test_regular_packets_with_increasing_queue_delay_trigger_a_warning():
+    from gear_sonic.utils.teleop.tracking_timing import PicoTimingMonitor
+    monitor = PicoTimingMonitor()
+    for i in range(20):
+        receipt = (1000 + i * 12) * MS
+        monitor.observe({'body': {}, 'body_update_sequence': i+1, 'sample_time_ns': receipt,
+                         'body_input_timing': {'body_sequence': i+1,
+                                              'headset_frame_unix_ns': 1_700_000_000_000_000_000 + i*10*MS,
+                                              'sdk_receipt_monotonic_ns': receipt}}, receipt)
+    message = monitor.warning(receipt)
+    assert 'arrival gap max=12.0 ms' in message
+    assert 'message excess transit max=38.0 ms' in message
+    assert 'clocks not synchronized' in message

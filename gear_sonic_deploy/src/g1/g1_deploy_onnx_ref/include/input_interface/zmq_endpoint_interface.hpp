@@ -130,7 +130,8 @@ public:
         const std::string& topic = "pose",
         bool use_conflate = false,
         bool verbose = false
-    ) : InputInterface(), host_(host), port_(port), topic_(topic), verbose_(verbose), is_localhost_(host == LOCALHOST) {
+    ) : InputInterface(), motion_merger_(verbose), host_(host), port_(port), topic_(topic), verbose_(verbose),
+        is_localhost_(host == LOCALHOST || host == "127.0.0.1" || host == "::1") {
         type_ = InputType::NETWORK;
         
         // Set terminal to non-blocking mode (same as SimpleKeyboard)
@@ -1493,8 +1494,8 @@ private:
                 }
             }
             
-            // Print frame indices for protocol v3 (SMPL actions)
-            if (protocol_version == 3 && !frame_indices.empty()) {
+            // Per-packet diagnostics must not flush stdout on the normal input path.
+            if (verbose_ && protocol_version == 3 && !frame_indices.empty()) {
                 if (frame_indices.size() == 1) {
                     std::cout << "[ZMQEndpointInterface] Protocol v3: Received SMPL action (single) - frame_index: " 
                               << frame_indices[0] << std::endl;

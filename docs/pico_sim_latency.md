@@ -1,7 +1,8 @@
 # PICO → MuJoCo latency improvements
 
-Measured on 2026-10-21 on the Ubuntu 24.04 / GTX 1650 PC described in
-[the setup guide](pico_sim_this_pc.md). All live comparisons use the same
+Live comparisons measured on 2026-10-21 on the Ubuntu 24.04 / GTX 1650 PC described in
+[the setup guide](pico_sim_this_pc.md); section 5 adds an isolated viewer benchmark
+from 2026-10-27. All live comparisons use the same
 four-frame low-latency SONIC checkpoint and a 50 Hz policy. These are successive
 run comparisons, not controlled estimates of each individual code change.
 
@@ -100,6 +101,54 @@ The policy still outputs at 50 Hz. Fresh-body gaps occasionally exceeded 20 ms
 (2.9% of gaps in the selected interval); regular average throughput does not
 guarantee a fresh input at every tick. Timing warnings identify these gaps but
 do not themselves change robot control.
+
+## 5. Reduce blocking viewer synchronization (2026-10-27)
+
+The physics thread called the full `viewer.sync()` every 20 ms. On this scene,
+copying all model/data arrays took longer than one 5 ms physics period.
+The PICO launcher now passes `--viewer-state-only`, using MuJoCo's existing
+`viewer.sync(state_only=True)` after one initial full synchronization.
+[MuJoCo documents this faster path](https://mujoco.readthedocs.io/en/stable/python.html#passive-viewer)
+for applications that do not edit model arrays at runtime. The PICO simulation
+updates physics state, commands and applied forces; GUI controls still synchronize.
+Other launches retain full synchronization by default, and versions without
+the API fall back to full synchronization with a startup message.
+
+A full / state-only / state-only / full comparison used the actual 43-DOF G1
+scene, MuJoCo 3.17.0, 200 Hz physics and 50 Hz viewer updates. Each run lasted
+three simulated seconds (600 physics steps and 150 timed sync calls).
+
+| Measurement | Full sync, two runs | State-only, two runs |
+| --- | ---: | ---: |
+| Viewer sync median | 5.806 / 5.824 ms | 0.318 / 0.289 ms |
+| Viewer sync p95 | 6.000 / 6.064 ms | 0.488 / 0.395 ms |
+| Physics + sync work p95 | 6.154 / 6.160 ms | 0.773 / 0.619 ms |
+| Steps whose work exceeded 5 ms | 150 / 150 | 0 / 0 |
+
+This removes about **95% of the blocking viewer synchronization time**. All four
+physics trajectories matched exactly in joint positions and velocities, and
+viewer joint positions matched current simulation positions. All runs remained
+approximately 1.00 times real time; the improvement is reduced blocking/jitter
+and CPU work, not an increase in average physics frequency.
+
+This benchmark uses contact-stabilized physics without PICO, policy inference
+or DDS. It does not measure total teleoperation latency, display scanout, or
+fix upstream tracking gaps. No operator interacted with the viewer. The normal
+PICO simulator entry point was also smoke-tested with the option enabled and
+the policy-release guard active. Ten simulation pacing/release tests passed.
+
+Source: [complete benchmark results](measurements/pico_sim_20261027/viewer_state_only_benchmark.json).
+Reproduce without starting a teleop/controller session:
+
+```bash
+source .local/pico-sim/env.sh
+python gear_sonic/scripts/benchmark_mujoco_viewer.py --seconds 3 \
+  --output .local/pico-sim/logs/viewer-benchmark.json
+```
+
+Keep the viewer untouched while the comparison runs. For manual full-sync
+operation, run `run_sim_loop.py` without `--viewer-state-only`; runtime changes
+to model arrays such as geometry colors require that full-sync mode.
 
 ## Measurement boundaries and reproduction
 

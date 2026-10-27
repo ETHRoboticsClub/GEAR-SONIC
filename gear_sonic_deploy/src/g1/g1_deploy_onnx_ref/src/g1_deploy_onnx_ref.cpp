@@ -58,6 +58,7 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <unistd.h>
 #include <cstring>
 #include <functional>
@@ -4587,22 +4588,26 @@ int main(int argc, char const* argv[]) {
 #if HAS_ROS2
   if (inputType == "ros2") {
     while (!custom.operator_state.stop && rclcpp::ok()) { 
-      sleep(0.02); 
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     if (!rclcpp::ok()) {
       std::cout << "[INFO] ROS2 shutdown detected (Ctrl+C)" << std::endl;
     }
   } else {
-    while (!custom.operator_state.stop) { sleep(0.02); }
+    while (!custom.operator_state.stop) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
   }
 #else
-  while (!custom.operator_state.stop) { sleep(0.02); }
+  while (!custom.operator_state.stop) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
 #endif
   
   std::cout << "[DEBUG] Stopping G1Deploy..." << std::endl;
   custom.Stop();
   std::cout << "[DEBUG] Waiting for cleanup..." << std::endl;
-  sleep(0.5);
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
   std::cout << "[DEBUG] Program exiting normally..." << std::endl;
   return 0;
 }

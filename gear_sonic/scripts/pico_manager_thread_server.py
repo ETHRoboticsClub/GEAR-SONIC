@@ -36,6 +36,7 @@ import torch
 import zmq
 
 from gear_sonic.utils.teleop import input_readers
+from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, prepare_cpu_kinematics
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
 from gear_sonic.trl.utils.torch_transform import (
@@ -216,7 +217,7 @@ def _process_3pt_pose(smpl_pose_np):
                      IMPORTANT: Positions and orientations are RELATIVE TO ROOT (pelvis).
 
     Processing Steps:
-        1. Transform all 24 joints from Unity frame to robot frame
+        1. Transform the four consumed joints from Unity frame to robot frame
         2. Extract 4 keypoints: Root(0), L-Wrist(22), R-Wrist(23), Neck(12)
         3. Apply per-joint rotation OFFSETS to align joint frames
         4. Make L-Wrist, R-Wrist, Neck relative to Root (both position and orientation)
@@ -226,92 +227,21 @@ def _process_3pt_pose(smpl_pose_np):
           ThreePointPose.apply_calibration() to ensure consistency with calibrated
           orientations.
     """
-
-    # Defensive copy: _compute_rel_transform modifies pose[:3] in-place, which would
-    # corrupt the caller's array (e.g. the reader's latest sample) and cause wrong results
-    # if the same sample is processed more than once.
-    smpl_pose_np = smpl_pose_np.copy()
-
-    # =========================================================================
-    # STEP 1: Transform all joints from Unity frame to robot frame
-    # =========================================================================
-    # Input: smpl_pose_np[i] = [x, y, z, qx, qy, qz, qw] in Unity frame (scalar-last)
-    # Output: body_poses[i] = [x, y, z, qw, qx, qy, qz] in robot frame (scalar-first)
-    body_poses = np.zeros((smpl_pose_np.shape[0], 7), dtype=np.float32)
-    # Only these four transforms are consumed below. Computing the other
-    # twenty joints on every tracking update adds avoidable latency.
-    for i in (0, 22, 23, 12):
-        pos, orn = _compute_rel_transform(
-            smpl_pose_np[i], [0, 0, 0, 0, 0, 0, 1], scalar_first=False
-        )
-        body_poses[i, :3] = pos  # Position in robot frame
-        body_poses[i, 3:] = orn  # Quaternion [qw, qx, qy, qz] in robot frame
-
-    # =========================================================================
-    # STEP 2 & 3: Extract 4 keypoints and apply rotation OFFSETS
-    # =========================================================================
-    # We only care about these SMPL joint indices:
-    #   - Joint 0:  Root/Pelvis (reference frame)
-    #   - Joint 22: Left Wrist
-    #   - Joint 23: Right Wrist
-    #   - Joint 12: Neck (more stable than Head joint 15)
-    #
-    # kp_poses maps these to indices 0, 1, 2, 3 respectively
-    positions = np.array([[p[0], p[1], p[2]] for p in body_poses])
-    kp_poses = np.zeros((4, 7), dtype=np.float32)
-
-    for i, pose in enumerate(body_poses):
-        if i not in [0, 22, 23, 12]:
-            continue  # Skip joints we don't care about
-
-        pos = positions[i]
-
-        # Map SMPL joint index to our keypoint index (0-3)
-        # rel_i: 0=Root, 1=L-Wrist, 2=R-Wrist, 3=Neck
-        rel_i = [0, 22, 23, 12].index(i)
-
-        # Extract quaternion and apply rotation offset
-        # pose[3:7] is [qw, qx, qy, qz] (scalar-first from _compute_rel_transform)
-        quat = np.array([pose[3], pose[4], pose[5], pose[6]])
-
-        # Apply offset: new_rotation = original_rotation * OFFSET
-        # This post-multiplies the offset (intrinsic rotation)
-        rot_quat = (sRot.from_quat(quat, scalar_first=True) * OFFSETS[rel_i]).as_quat(
-            scalar_first=False
-        )
-
-        kp_poses[rel_i, 3:] = rot_quat  # Store as scalar-last temporarily for scipy compatibility
-        kp_poses[rel_i, :3] = pos
-
-    # =========================================================================
-    # STEP 4: Make positions and orientations RELATIVE TO ROOT
-    # =========================================================================
-    # This transforms everything into the root's local coordinate frame.
-    # After this step:
-    #   - Root's position would be (0,0,0) and orientation identity (but we don't return root)
-    #   - Other keypoints are expressed relative to root
-    root_pos = kp_poses[0, :3].copy()
-    root_quat = kp_poses[0, 3:].copy()  # Still scalar-last for scipy
-
-    for i in range(1, 4):
-        # Position: subtract root position, then rotate by inverse of root orientation
-        kp_poses[i, :3] = sRot.from_quat(root_quat).inv().apply(kp_poses[i, :3] - root_pos)
-
-        # Orientation: compute relative rotation (root_inv * keypoint_rot)
-        # Result stored as scalar-FIRST [qw, qx, qy, qz]
-        kp_poses[i, 3:] = (
-            sRot.from_quat(root_quat).inv() * sRot.from_quat(kp_poses[i, 3:])
-        ).as_quat(scalar_first=True)
-
-    # =========================================================================
-    # STEP 5: Return only L-Wrist, R-Wrist, Neck (skip Root)
-    # =========================================================================
-    # NOTE: Position and orientation calibration (including neck position via kinematic
-    #       chain) is done in ThreePointPose.apply_calibration() to ensure consistency
-    #       between calibrated orientation and computed neck position.
-    # kp_poses[1:] = indices 1, 2, 3 = L-Wrist, R-Wrist, Neck
-    # Each row: [x, y, z, qw, qx, qy, qz] relative to root, scalar-first quaternion
-    return kp_poses[1:]
+    # This path always uses the identity world frame. Batch the four consumed
+    # keypoints while retaining the original float32 rounding boundaries.
+    indices = [0, 22, 23, 12]
+    poses = smpl_pose_np[indices]
+    basis = np.array([[-1., 0., 0.], [0., 0., 1.], [0., 1., 0.]])
+    positions = (poses[:, :3] @ basis.T).astype(np.float32)
+    matrices = sRot.from_quat(poses[:, 3:]).as_matrix()
+    quats = sRot.from_matrix(basis @ matrices @ basis.T).as_quat(scalar_first=True).astype(np.float32)
+    rotations = sRot.from_quat(quats, scalar_first=True) * sRot.concatenate(OFFSETS)
+    offset_quats = rotations.as_quat().astype(np.float32)
+    root_inverse = sRot.from_quat(offset_quats[0]).inv()
+    result = np.empty((3, 7), dtype=np.float32)
+    result[:, :3] = root_inverse.apply(positions[1:] - positions[0])
+    result[:, 3:] = (root_inverse * sRot.from_quat(offset_quats[1:])).as_quat(scalar_first=True)
+    return result
 
 
 # =============================================================================
@@ -360,10 +290,14 @@ def process_smpl_joints(body_pose, global_orient, transl):
     global_orient_new = quaternion_to_angle_axis(global_orient_quat)
 
     # Compute joints and vertices using SMPL model (single forward pass)
-    joints = compute_human_joints(
-        body_pose=body_pose[..., :63],
-        global_orient=global_orient_new,
-    )  # (*, 24, 3)
+    if (body_pose.device.type == "cpu" and not body_pose.requires_grad
+            and not global_orient_new.requires_grad):
+        joints = torch.from_numpy(human_joints_cpu(body_pose, global_orient_new))
+    else:
+        joints = compute_human_joints(
+            body_pose=body_pose[..., :63],
+            global_orient=global_orient_new,
+        )  # (*, 24, 3)
 
     # Apply base rotation removal and compute local joints
     if remove_smpl_base_rot is not None:
@@ -464,15 +398,11 @@ def compute_from_body_poses(parent_indices: list, device, body_poses_np: np.ndar
     global_rots = sRot.from_quat(global_quats, scalar_first=True)
     global_rots = global_rots * sRot.from_euler("y", 180, degrees=True)
 
-    local_rots = []
-    for i in range(24):
-        if parent_indices[i] == -1:
-            local_rots.append(global_rots[i])
-        else:
-            local_rot = global_rots[parent_indices[i]].inv() * global_rots[i]
-            local_rots.append(local_rot)
-
-    pose_aa = np.array([rot.as_rotvec() for rot in local_rots])
+    parents = np.asarray(parent_indices, dtype=np.intp)
+    roots = parents == -1
+    pose_aa = np.empty((24, 3))
+    pose_aa[roots] = global_rots[roots].as_rotvec()
+    pose_aa[~roots] = (global_rots[parents[~roots]].inv() * global_rots[~roots]).as_rotvec()
 
     body_pose = torch.from_numpy(pose_aa[1:].flatten()).float().to(device).unsqueeze(0)
     global_orient = torch.from_numpy(pose_aa[0]).float().to(device).unsqueeze(0)
@@ -596,9 +526,11 @@ def _interp_pose_axis_angle(
     """
     prev_quats = sRot.from_rotvec(prev_pose.reshape(-1, 3)).as_quat()  # (N,4) xyzw
     curr_quats = sRot.from_rotvec(curr_pose.reshape(-1, 3)).as_quat()
-    out_quats = np.empty_like(prev_quats)
-    for i in range(prev_quats.shape[0]):
-        out_quats[i] = _quat_lerp_normalized(prev_quats[i], curr_quats[i], alpha)
+    curr_quats = np.where(np.sum(prev_quats * curr_quats, axis=1, keepdims=True) < 0,
+                          -curr_quats, curr_quats)
+    out_quats = (1.0 - alpha) * prev_quats + alpha * curr_quats
+    norm = np.linalg.norm(out_quats, axis=1, keepdims=True)
+    np.divide(out_quats, norm, out=out_quats, where=norm > 0)
     out_pose = sRot.from_quat(out_quats).as_rotvec().reshape(prev_pose.shape)
     return out_pose
 
@@ -1099,6 +1031,8 @@ class PoseStreamer:
         self.device = (
             torch.device("cuda") if use_cuda and torch.cuda.is_available() else torch.device("cpu")
         )
+        if self.device.type == "cpu":
+            prepare_cpu_kinematics()  # Warm model data before the operator enters POSE.
 
         if record_dir:
             os.makedirs(record_dir, exist_ok=True)

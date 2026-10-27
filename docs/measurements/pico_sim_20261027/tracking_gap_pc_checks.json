@@ -1,0 +1,26 @@
+{
+  "recorded_at": "2026-10-27T18:37:41.071951+01:00",
+  "note": "Read-only PC check with teleop stopped. No live headset timing captured and no network settings changed.",
+  "profile": {
+    "returncode": 0,
+    "stdout": "connection.id:                          teleop-sim\nconnection.interface-name:              wlxec750c689f4a\n802-11-wireless.band:                   bg\n802-11-wireless.channel:                6\n802-11-wireless.powersave:              2 (disable)",
+    "stderr": ""
+  },
+  "devices": {
+    "returncode": 0,
+    "stdout": "DEVICE           TYPE      STATE                   CONNECTION \nwlxec750c68c5d8  wifi      connected               ETHRC_SL   \nlo               loopback  connected (externally)  lo         \ndocker0          bridge    connected (externally)  docker0    \nwlxec750c689f4a  wifi      disconnected            --         \nenp6s0           ethernet  unavailable             --         \ntailscale0       tun       unmanaged               --",
+    "stderr": ""
+  },
+  "hotspot_interface": "wlxec750c689f4a",
+  "usb": {
+    "speed": "480",
+    "power/control": "on",
+    "power/runtime_status": "active"
+  },
+  "driver_deep_sleep_disabled": "Y",
+  "channel_36_first_read": "5180.0 MHz [36] (20.0 dBm) (no IR)",
+  "subsequent_iw_phy_info": {
+    "status": "timed_out",
+    "timeout_seconds": 5
+  }
+}

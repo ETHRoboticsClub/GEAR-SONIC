@@ -1,0 +1,479 @@
+{
+  "source": "Latest PICO session started 2026-10-27 17:43:30; body tracking 18:00:31.886 to 18:04:09.259",
+  "mode_transitions": [
+    {
+      "line": 40,
+      "text": "[Manager] StreamMode switch: OFF -> PLANNER"
+    },
+    {
+      "line": 44,
+      "text": "[Manager] StreamMode switch: PLANNER -> POSE"
+    }
+  ],
+  "pose_fps_windows": 38,
+  "pose_fps_windows_after_first": {
+    "min": 42.48,
+    "p50": 45.14,
+    "p95": 46.574,
+    "max": 46.8
+  },
+  "first_window": {
+    "line": 42,
+    "fps": 0.0,
+    "step": 1,
+    "smpl": {
+      "median": 57.47,
+      "p95": 57.47,
+      "max": 57.47,
+      "n": 1
+    }
+  },
+  "last_window": {
+    "line": 338,
+    "fps": 44.94,
+    "step": 9281,
+    "smpl": {
+      "median": 2.78,
+      "p95": 3.7,
+      "max": 4.68,
+      "n": 410
+    },
+    "preparation": {
+      "median": 4.71,
+      "p95": 6.39,
+      "max": 8.55,
+      "n": 226
+    }
+  },
+  "window_median_smpl_ms": {
+    "min": 2.68,
+    "p50": 2.74,
+    "p95": 2.792,
+    "max": 2.8
+  },
+  "window_p95_smpl_ms": {
+    "min": 3.5,
+    "p50": 3.65,
+    "p95": 3.782,
+    "max": 3.9
+  },
+  "window_median_preparation_ms": {
+    "min": 4.6,
+    "p50": 4.76,
+    "p95": 4.952,
+    "max": 5.0
+  },
+  "window_p95_preparation_ms": {
+    "min": 5.81,
+    "p50": 6.12,
+    "p95": 6.326,
+    "max": 6.39
+  },
+  "active_warning_reports": 189,
+  "reported_late_gap_count": 1967,
+  "reported_maxima_of_fresh_body_gap_ms": {
+    "min": 11.9,
+    "p50": 41.5,
+    "p95": 84.5,
+    "max": 156.8
+  },
+  "bridge_reader_reported_maxima_ms": {
+    "min": 0.6,
+    "p50": 1.1,
+    "p95": 1.6,
+    "max": 2.5
+  },
+  "longest_active_gap_report": {
+    "line": 278,
+    "gap_max_ms": 156.8,
+    "late_gaps": 9,
+    "silence_ms": 0.3,
+    "bridge_reader_max_ms": 1.6,
+    "bridge_manager_age_ms": 0.6
+  },
+  "ending_no_body_max_ms": 57022.5,
+  "controller_active_loop_reports": 190,
+  "controller_active_stats": {
+    "state_age_ms": {
+      "min": 2.634,
+      "p50": 4.476,
+      "p95": 5.068,
+      "max": 5.31
+    },
+    "stream_rolling_mean_ms": {
+      "min": 11.444,
+      "p50": 14.448,
+      "p95": 15.084,
+      "max": 15.273
+    },
+    "stream_rolling_std_ms": {
+      "min": 6.568,
+      "p50": 11.633,
+      "p95": 12.952,
+      "max": 13.959
+    },
+    "imu_age_ms": {
+      "min": 2.636,
+      "p50": 4.438,
+      "p95": 5.063,
+      "max": 5.307
+    },
+    "obs_us": {
+      "min": 462.0,
+      "p50": 523.0,
+      "p95": 2853.1,
+      "max": 2949.0
+    },
+    "policy_us": {
+      "min": 916.0,
+      "p50": 940.5,
+      "p95": 2895.95,
+      "max": 3448.0
+    },
+    "obs_to_command_us": {
+      "min": 1397.0,
+      "p50": 1506.0,
+      "p95": 4238.65,
+      "max": 4383.0
+    }
+  },
+  "stream_prepare_report_count": 37,
+  "stream_prepare_report_examples": [
+    "[Stream preparation] n=234 receive->worker mean/max=0.0227621/0.600999 ms; decode+publish mean/max=2.29889/8.06925 ms",
+    "[Stream preparation] n=224 receive->worker mean/max=0.0210501/0.214197 ms; decode+publish mean/max=2.1324/5.27838 ms",
+    "[Stream preparation] n=224 receive->worker mean/max=0.0190762/0.086439 ms; decode+publish mean/max=2.25191/4.54852 ms",
+    "[Stream preparation] n=226 receive->worker mean/max=0.019198/0.078029 ms; decode+publish mean/max=2.25567/4.49873 ms"
+  ],
+  "controller_top_log_prefixes": [
+    [
+      "[StreamedMotionMerger]",
+      34185
+    ],
+    [
+      "[ZMQEndpointInterface]",
+      8546
+    ],
+    [
+      "[Stream preparation]",
+      37
+    ],
+    [
+      "[Mode Filter]",
+      1
+    ]
+  ],
+  "merger_reports": 8547,
+  "controller_log_bytes": 4768490,
+  "notes": [
+    "FPS excludes the first report because it includes manager idle time before POSE.",
+    "Per-window and per-second aggregate statistics are not per-frame percentile estimates.",
+    "Controller active range is bounded by first/last incoming frame logs; ending stale-input tail is excluded.",
+    "No raw timestamped ZMQ capture was saved for this run, so end-to-end newest-input latency cannot be reconstructed."
+  ],
+  "stream_prepare_reports": [
+    {
+      "line": 322,
+      "n": 1,
+      "wake_mean_ms": 0.027389,
+      "wake_max_ms": 0.027389,
+      "decode_mean_ms": 10.8856,
+      "decode_max_ms": 10.8856
+    },
+    {
+      "line": 1505,
+      "n": 234,
+      "wake_mean_ms": 0.0227621,
+      "wake_max_ms": 0.600999,
+      "decode_mean_ms": 2.29889,
+      "decode_max_ms": 8.06925
+    },
+    {
+      "line": 2637,
+      "n": 224,
+      "wake_mean_ms": 0.0210501,
+      "wake_max_ms": 0.214197,
+      "decode_mean_ms": 2.1324,
+      "decode_max_ms": 5.27838
+    },
+    {
+      "line": 3793,
+      "n": 230,
+      "wake_mean_ms": 0.0195935,
+      "wake_max_ms": 0.053909,
+      "decode_mean_ms": 2.11688,
+      "decode_max_ms": 3.87872
+    },
+    {
+      "line": 4949,
+      "n": 230,
+      "wake_mean_ms": 0.0195196,
+      "wake_max_ms": 0.046229,
+      "decode_mean_ms": 2.25254,
+      "decode_max_ms": 5.08482
+    },
+    {
+      "line": 6080,
+      "n": 225,
+      "wake_mean_ms": 0.0190221,
+      "wake_max_ms": 0.059479,
+      "decode_mean_ms": 2.16474,
+      "decode_max_ms": 4.87247
+    },
+    {
+      "line": 7201,
+      "n": 223,
+      "wake_mean_ms": 0.0205664,
+      "wake_max_ms": 0.394904,
+      "decode_mean_ms": 2.17978,
+      "decode_max_ms": 4.2946
+    },
+    {
+      "line": 8273,
+      "n": 212,
+      "wake_mean_ms": 0.0205403,
+      "wake_max_ms": 0.084309,
+      "decode_mean_ms": 2.17923,
+      "decode_max_ms": 4.38179
+    },
+    {
+      "line": 9399,
+      "n": 224,
+      "wake_mean_ms": 0.0202736,
+      "wake_max_ms": 0.140248,
+      "decode_mean_ms": 2.16088,
+      "decode_max_ms": 4.1054
+    },
+    {
+      "line": 10535,
+      "n": 226,
+      "wake_mean_ms": 0.0195013,
+      "wake_max_ms": 0.112068,
+      "decode_mean_ms": 2.16701,
+      "decode_max_ms": 4.31469
+    },
+    {
+      "line": 11692,
+      "n": 229,
+      "wake_mean_ms": 0.0210009,
+      "wake_max_ms": 0.341714,
+      "decode_mean_ms": 2.20182,
+      "decode_max_ms": 4.59609
+    },
+    {
+      "line": 12833,
+      "n": 227,
+      "wake_mean_ms": 0.0181138,
+      "wake_max_ms": 0.097098,
+      "decode_mean_ms": 2.14266,
+      "decode_max_ms": 4.45294
+    },
+    {
+      "line": 13966,
+      "n": 224,
+      "wake_mean_ms": 0.0186468,
+      "wake_max_ms": 0.05112,
+      "decode_mean_ms": 2.0965,
+      "decode_max_ms": 4.0221
+    },
+    {
+      "line": 15112,
+      "n": 228,
+      "wake_mean_ms": 0.0195118,
+      "wake_max_ms": 0.052209,
+      "decode_mean_ms": 2.06238,
+      "decode_max_ms": 3.53449
+    },
+    {
+      "line": 16258,
+      "n": 228,
+      "wake_mean_ms": 0.0189014,
+      "wake_max_ms": 0.080788,
+      "decode_mean_ms": 2.05631,
+      "decode_max_ms": 3.4162
+    },
+    {
+      "line": 17434,
+      "n": 234,
+      "wake_mean_ms": 0.0180288,
+      "wake_max_ms": 0.053929,
+      "decode_mean_ms": 2.07009,
+      "decode_max_ms": 3.5821
+    },
+    {
+      "line": 18540,
+      "n": 220,
+      "wake_mean_ms": 0.0191267,
+      "wake_max_ms": 0.062869,
+      "decode_mean_ms": 2.06362,
+      "decode_max_ms": 3.59622
+    },
+    {
+      "line": 19691,
+      "n": 229,
+      "wake_mean_ms": 0.0187118,
+      "wake_max_ms": 0.054839,
+      "decode_mean_ms": 2.0631,
+      "decode_max_ms": 3.63754
+    },
+    {
+      "line": 20767,
+      "n": 214,
+      "wake_mean_ms": 0.0233585,
+      "wake_max_ms": 1.01088,
+      "decode_mean_ms": 2.07249,
+      "decode_max_ms": 3.55129
+    },
+    {
+      "line": 21874,
+      "n": 219,
+      "wake_mean_ms": 0.0180618,
+      "wake_max_ms": 0.090938,
+      "decode_mean_ms": 2.04371,
+      "decode_max_ms": 3.3839
+    },
+    {
+      "line": 23015,
+      "n": 227,
+      "wake_mean_ms": 0.0194632,
+      "wake_max_ms": 0.060169,
+      "decode_mean_ms": 2.02606,
+      "decode_max_ms": 3.19379
+    },
+    {
+      "line": 24121,
+      "n": 220,
+      "wake_mean_ms": 0.018731,
+      "wake_max_ms": 0.057169,
+      "decode_mean_ms": 2.08229,
+      "decode_max_ms": 3.56471
+    },
+    {
+      "line": 25237,
+      "n": 222,
+      "wake_mean_ms": 0.0191412,
+      "wake_max_ms": 0.055639,
+      "decode_mean_ms": 2.06751,
+      "decode_max_ms": 3.42497
+    },
+    {
+      "line": 26388,
+      "n": 229,
+      "wake_mean_ms": 0.0180028,
+      "wake_max_ms": 0.043799,
+      "decode_mean_ms": 2.03987,
+      "decode_max_ms": 3.30185
+    },
+    {
+      "line": 27549,
+      "n": 231,
+      "wake_mean_ms": 0.0185245,
+      "wake_max_ms": 0.059889,
+      "decode_mean_ms": 2.00421,
+      "decode_max_ms": 3.47318
+    },
+    {
+      "line": 28715,
+      "n": 232,
+      "wake_mean_ms": 0.0190774,
+      "wake_max_ms": 0.091638,
+      "decode_mean_ms": 1.98725,
+      "decode_max_ms": 3.34158
+    },
+    {
+      "line": 29882,
+      "n": 231,
+      "wake_mean_ms": 0.0230778,
+      "wake_max_ms": 0.742737,
+      "decode_mean_ms": 2.05106,
+      "decode_max_ms": 3.49843
+    },
+    {
+      "line": 30969,
+      "n": 215,
+      "wake_mean_ms": 0.0202026,
+      "wake_max_ms": 0.404353,
+      "decode_mean_ms": 2.007,
+      "decode_max_ms": 3.44258
+    },
+    {
+      "line": 32120,
+      "n": 229,
+      "wake_mean_ms": 0.0181265,
+      "wake_max_ms": 0.039679,
+      "decode_mean_ms": 1.95391,
+      "decode_max_ms": 3.17731
+    },
+    {
+      "line": 33266,
+      "n": 228,
+      "wake_mean_ms": 0.0182345,
+      "wake_max_ms": 0.055539,
+      "decode_mean_ms": 2.07165,
+      "decode_max_ms": 3.7272
+    },
+    {
+      "line": 34408,
+      "n": 226,
+      "wake_mean_ms": 0.0181193,
+      "wake_max_ms": 0.055919,
+      "decode_mean_ms": 2.04524,
+      "decode_max_ms": 3.47822
+    },
+    {
+      "line": 35549,
+      "n": 227,
+      "wake_mean_ms": 0.0185347,
+      "wake_max_ms": 0.059769,
+      "decode_mean_ms": 2.07151,
+      "decode_max_ms": 3.46885
+    },
+    {
+      "line": 36720,
+      "n": 233,
+      "wake_mean_ms": 0.0191115,
+      "wake_max_ms": 0.054579,
+      "decode_mean_ms": 2.09364,
+      "decode_max_ms": 4.6492
+    },
+    {
+      "line": 37816,
+      "n": 218,
+      "wake_mean_ms": 0.0188633,
+      "wake_max_ms": 0.074359,
+      "decode_mean_ms": 2.17199,
+      "decode_max_ms": 4.45392
+    },
+    {
+      "line": 38922,
+      "n": 220,
+      "wake_mean_ms": 0.0179095,
+      "wake_max_ms": 0.055959,
+      "decode_mean_ms": 2.15236,
+      "decode_max_ms": 4.59712
+    },
+    {
+      "line": 40028,
+      "n": 220,
+      "wake_mean_ms": 0.018246,
+      "wake_max_ms": 0.084638,
+      "decode_mean_ms": 2.11235,
+      "decode_max_ms": 4.18103
+    },
+    {
+      "line": 41154,
+      "n": 224,
+      "wake_mean_ms": 0.0190762,
+      "wake_max_ms": 0.086439,
+      "decode_mean_ms": 2.25191,
+      "decode_max_ms": 4.54852
+    },
+    {
+      "line": 42290,
+      "n": 226,
+      "wake_mean_ms": 0.019198,
+      "wake_max_ms": 0.078029,
+      "decode_mean_ms": 2.25567,
+      "decode_max_ms": 4.49873
+    }
+  ]
+}

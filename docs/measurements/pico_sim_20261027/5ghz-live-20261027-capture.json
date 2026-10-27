@@ -1,0 +1,31 @@
+{
+  "created_at": "2026-10-27T19:03:48.553403+01:00",
+  "branch": "feature-low-latency-sim",
+  "commit": "e2328a1a102ff5beb56a680987e8af7f67fbdd4a",
+  "worktree_status": "M docs/pico_sim_latency.md\n M docs/pico_sim_this_pc.md\n M gear_sonic/scripts/analyze_pico_sim_latency.py\n M gear_sonic/scripts/measure_pico_sim_latency.py\n M gear_sonic/scripts/pico_sim_bridge.py\n M gear_sonic/scripts/run_sim_loop.py\n M gear_sonic/tests/teleop/test_pico_sim_bridge.py\n M gear_sonic/utils/mujoco_sim/base_sim.py\n M gear_sonic/utils/mujoco_sim/configs.py\n M gear_sonic/utils/mujoco_sim/unitree_sdk2py_bridge.py\n M gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/streamed_motion_merger.hpp\n M gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_endpoint_interface.hpp\n M gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp\n M install_scripts/run_pico_sim.sh\n?? docs/measurements/pico_sim_20261027/\n?? docs/pico_sim_latency_audit_20261027.md\n?? docs/pico_sim_operator_guide.md\n?? docs/pico_tracking_gaps.md\n?? gear_sonic/scripts/benchmark_mujoco_viewer.py\n?? gear_sonic/scripts/pico_sim_doctor.py\n?? gear_sonic/scripts/probe_pico_tracking.py\n?? gear_sonic/tests/teleop/test_tracking_probe.py\n?? gear_sonic/tests/test_latency_capture.py\n?? gear_sonic/tests/test_sim_release_guard.py\n?? gear_sonic/utils/mujoco_sim/policy_release_guard.py\n?? gear_sonic_deploy/policy/low_latency/\n?? install_scripts/run_sonic_keyboard_sim.sh",
+  "controller_sha256": "b6294a8c55ace05fb7bdbeb9aee9bdfcba98dd963f9a02ce19064c9cec153e4f",
+  "hotspot_band_channel": "a\n36",
+  "expected_launcher_configuration": "policy/low_latency; 4 reference frames; 50 Hz policy",
+  "clock": "PC monotonic receipt; not headset capture time",
+  "name": "pico-latency-20261027-190348-100649",
+  "state": "complete",
+  "requested_seconds": 60.0,
+  "warmup_seconds": 5.0,
+  "raw_capture": "/home/ethan/Humanoid/GEAR-SONIC/.local/pico-sim/logs/pico-latency-20261027-190348-100649.msgpack",
+  "summary": "/home/ethan/Humanoid/GEAR-SONIC/.local/pico-sim/logs/pico-latency-20261027-190348-100649.json",
+  "components": "/home/ethan/Humanoid/GEAR-SONIC/.local/pico-sim/logs/pico-latency-20261027-190348-100649-components.json",
+  "elapsed_seconds": 60.0,
+  "stop_reason": "complete",
+  "packets": 17265,
+  "rates_hz": {
+    "manager_state": 93.77,
+    "g1_debug": 50.0,
+    "tracking": 93.63,
+    "pose": 49.85,
+    "robot_config": 0.5
+  },
+  "note": "Run analyze_pico_sim_latency.py on the raw capture for latency components. PC receipt to feedback excludes headset capture and visible robot response.",
+  "lowstate_capture": "/home/ethan/Humanoid/GEAR-SONIC/.local/pico-sim/logs/pico-latency-20261027-190348-100649-lowstate.msgpack",
+  "sim_realtime_factor": 1.0000119623232726,
+  "component_logs": "/home/ethan/Humanoid/GEAR-SONIC/.local/pico-sim/logs/pico-latency-20261027-190348-100649-logs"
+}

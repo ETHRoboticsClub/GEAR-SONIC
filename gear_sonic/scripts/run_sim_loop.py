@@ -24,6 +24,7 @@ class SimWrapper:
         self.config = config
 
         init_channel(config=self.config)
+        self.config["CHANNEL_INITIALIZED"] = True
 
         # Create simulator using factory
         self.sim = SimulatorFactory.create_simulator(
@@ -37,6 +38,9 @@ def main(config: ArgsConfig):
     wbc_config = config.load_wbc_yaml()
     # NOTE: we will override the interface to local if it is not specified
     wbc_config["ENV_NAME"] = config.env_name
+    wbc_config["VIEWER_STATE_ONLY"] = config.viewer_state_only
+    wbc_config["GUARD_POLICY_RELEASE"] = config.guard_policy_release
+    wbc_config["READINESS_STATUS_PATH"] = config.readiness_status_path
 
     if config.enable_image_publish:
         assert (

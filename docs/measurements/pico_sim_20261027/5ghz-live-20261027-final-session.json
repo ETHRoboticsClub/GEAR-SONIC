@@ -1,0 +1,19 @@
+{
+  "stopped_at": "2026-10-27T19:12:18+0100",
+  "capture": "pico-latency-20261027-190348-100649",
+  "raw_capture_seconds": 60.0,
+  "feedback_samples": 3000,
+  "matched_samples": 2994,
+  "selected_pose_seconds": 60.0002587529998,
+  "full_session_completed_gap_report_max_ms": 88.3,
+  "full_session_local_relay_report_max_ms": 2.4,
+  "full_session_active_warning_reports": 159,
+  "full_session_fall_warnings": 2,
+  "fall_warnings_in_capture_log_snapshot": 1,
+  "fall_timing_note": "Simulator event logs have no event timestamps; a fall in the snapshot may precede or occur within the capture. Later warnings are retained in full-session logs.",
+  "full_session_log_path": "/home/ethan/Humanoid/GEAR-SONIC/.local/pico-sim/logs/pico-latency-20261027-190348-100649-full-session-logs",
+  "raw_sha256": "d30d7b2f7691bb9784b79eb65bd16704678d36d582cc7880b5edaeff9dc48cad",
+  "sim_realtime_factor": 1.0000119623232726,
+  "sim_and_hotspot_stopped": true,
+  "note": "Full-session warning maxima are aggregates, not per-packet latency percentiles. The raw timing window is 60 seconds, not the entire session."
+}

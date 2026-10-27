@@ -7,6 +7,7 @@ so the WBC policy sees the sim as a real robot.
 
 import sys
 import threading
+import time
 from typing import Dict, Tuple
 
 import numpy as np
@@ -86,6 +87,12 @@ class UnitreeSdk2Bridge:
         self.right_hand_state_puber = ChannelPublisher("rt/dex3/right/state", HandState_)
         self.right_hand_state_puber.Init()
 
+        # Callbacks can run as soon as a subscriber is initialized.
+        self.low_cmd_lock = threading.Lock()
+        self.left_hand_cmd_lock = threading.Lock()
+        self.right_hand_cmd_lock = threading.Lock()
+        self.reset()
+
         self.low_cmd_suber = ChannelSubscriber("rt/lowcmd", LowCmd_)
         self.low_cmd_suber.Init(self.LowCmdHandler, 1)
 
@@ -95,10 +102,6 @@ class UnitreeSdk2Bridge:
         self.right_hand_cmd = HandCmd_default()
         self.right_hand_cmd_suber = ChannelSubscriber("rt/dex3/right/cmd", HandCmd_)
         self.right_hand_cmd_suber.Init(self.RightHandCmdHandler, 1)
-
-        self.low_cmd_lock = threading.Lock()
-        self.left_hand_cmd_lock = threading.Lock()
-        self.right_hand_cmd_lock = threading.Lock()
 
         self.wireless_controller = unitree_go_msg_dds__WirelessController_()
         self.wireless_controller_puber = ChannelPublisher(
@@ -127,12 +130,11 @@ class UnitreeSdk2Bridge:
         }
         self.joystick = None
 
-        self.reset()
-
     def reset(self):
         with self.low_cmd_lock:
             self.low_cmd_received = False
             self.new_low_cmd = False
+            self.last_low_cmd_at = None
         with self.left_hand_cmd_lock:
             self.left_hand_cmd_received = False
             self.new_left_hand_cmd = False
@@ -145,6 +147,16 @@ class UnitreeSdk2Bridge:
             self.low_cmd = msg
             self.low_cmd_received = True
             self.new_low_cmd = True
+            self.last_low_cmd_at = time.monotonic()
+
+    def body_command_status(self):
+        """Receipt time and valid, powered leg commands for sim release checks."""
+        with self.low_cmd_lock:
+            legs = self.low_cmd.motor_cmd[:12]
+            values = np.array([[m.q, m.dq, m.kp, m.kd, m.tau] for m in legs])
+            powered = (len(legs) == 12 and np.isfinite(values).all()
+                       and (values[:, 2] > 0).all() and (values[:, 3] >= 0).all())
+            return self.last_low_cmd_at, powered
 
     def LeftHandCmdHandler(self, msg):
         with self.left_hand_cmd_lock:
@@ -368,7 +380,7 @@ class ElasticBand:
     ref: https://github.com/unitreerobotics/unitree_mujoco
     """
 
-    def __init__(self):
+    def __init__(self, release_check=None):
         self.kp_pos = 10000
         self.kd_pos = 1000
         self.kp_ang = 1000
@@ -376,6 +388,16 @@ class ElasticBand:
         self.point = np.array([0, 0, 1])
         self.length = 0
         self.enable = True
+        self.release_check = release_check
+
+    def toggle(self):
+        if self.enable and self.release_check:
+            reason = self.release_check()
+            if reason:
+                print(f"[Release blocked] {reason}", flush=True)
+                return
+        self.enable = not self.enable
+        print(f"[Suspension] {'ATTACHED' if self.enable else 'RELEASED'}", flush=True)
 
     def Advance(self, pose):
         pos = pose[0:3]
@@ -402,9 +424,8 @@ class ElasticBand:
         if key == glfw.KEY_8:
             self.length += 0.1
         if key == glfw.KEY_9:
-            self.enable = not self.enable
+            self.toggle()
 
     def handle_keyboard_button(self, key):
         if key == "9":
-            self.enable = not self.enable
-            print(f"ElasticBand enable: {self.enable}")
+            self.toggle()

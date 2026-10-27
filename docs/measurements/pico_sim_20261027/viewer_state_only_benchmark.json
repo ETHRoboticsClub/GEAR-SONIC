@@ -1,0 +1,84 @@
+{
+  "mujoco_version": "3.17.0",
+  "physics_hz": 200.0,
+  "viewer_hz": 50.0,
+  "steps_per_run": 600,
+  "scene": "gear_sonic/data/robot_model/model_data/g1/scene_43dof.xml",
+  "trajectory_max_errors": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "runs": [
+    {
+      "state_only": false,
+      "sync_calls": 150,
+      "viewer_sync_ms": {
+        "p50": 5.806188,
+        "p95": 5.99982655,
+        "max": 6.282764
+      },
+      "physics_and_sync_work_ms": {
+        "p50": 0.2960335,
+        "p95": 6.15383995,
+        "max": 6.458704
+      },
+      "work_exceeding_physics_period": 150,
+      "sim_realtime_factor": 0.9999807417041637,
+      "viewer_qpos_max_error": 0.0
+    },
+    {
+      "state_only": true,
+      "sync_calls": 150,
+      "viewer_sync_ms": {
+        "p50": 0.31838299999999997,
+        "p95": 0.4883864999999999,
+        "max": 0.598967
+      },
+      "physics_and_sync_work_ms": {
+        "p50": 0.292798,
+        "p95": 0.77322,
+        "max": 1.374072
+      },
+      "work_exceeding_physics_period": 0,
+      "sim_realtime_factor": 0.9999805127131844,
+      "viewer_qpos_max_error": 0.0
+    },
+    {
+      "state_only": true,
+      "sync_calls": 150,
+      "viewer_sync_ms": {
+        "p50": 0.28864900000000004,
+        "p95": 0.39483194999999993,
+        "max": 0.460247
+      },
+      "physics_and_sync_work_ms": {
+        "p50": 0.2603235,
+        "p95": 0.6194004999999998,
+        "max": 0.877545
+      },
+      "work_exceeding_physics_period": 0,
+      "sim_realtime_factor": 0.9999807920348771,
+      "viewer_qpos_max_error": 0.0
+    },
+    {
+      "state_only": false,
+      "sync_calls": 150,
+      "viewer_sync_ms": {
+        "p50": 5.823657000000001,
+        "p95": 6.0639924999999995,
+        "max": 6.568923
+      },
+      "physics_and_sync_work_ms": {
+        "p50": 0.311133,
+        "p95": 6.159914049999999,
+        "max": 6.871761
+      },
+      "work_exceeding_physics_period": 150,
+      "sim_realtime_factor": 0.999979533752799,
+      "viewer_qpos_max_error": 0.0
+    }
+  ],
+  "note": "Viewer/physics comparison only; excludes PICO, policy, DDS and display scanout."
+}

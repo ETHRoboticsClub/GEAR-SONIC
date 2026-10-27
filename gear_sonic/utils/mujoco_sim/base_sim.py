@@ -5,6 +5,7 @@ commands, steps physics, and publishes observations back via the SDK bridge.
 BaseSimulator wraps DefaultEnv with rate-limiting and viewer/image update loops.
 """
 
+import inspect
 import os
 import pathlib
 from pathlib import Path
@@ -59,7 +60,17 @@ class DefaultEnv:
 
         self.reward_lock = Lock()
         self.unitree_bridge = None
+        self.policy_monitor = None
+        if self.config.get("GUARD_POLICY_RELEASE", False):
+            from gear_sonic.utils.mujoco_sim.policy_release_guard import PolicyFeedbackMonitor
+
+            self.policy_monitor = PolicyFeedbackMonitor(self.config.get("READINESS_STATUS_PATH", ""))
         self.onscreen = onscreen
+        self.viewer_state_only = self.config.get("VIEWER_STATE_ONLY", False)
+        if self.viewer_state_only and "state_only" not in inspect.signature(mujoco.viewer.Handle.sync).parameters:
+            print("[MuJoCo viewer] state_only is unavailable; using full synchronization.", flush=True)
+            self.viewer_state_only = False
+        self._viewer_initial_sync = True
 
         self.init_scene()
         self.last_reward = 0
@@ -183,7 +194,10 @@ class DefaultEnv:
 
         # Enable the elastic band
         if self.config["ENABLE_ELASTIC_BAND"] and self.use_floating_root_link:
-            self.elastic_band = ElasticBand()
+            self.elastic_band = ElasticBand(
+                release_check=(lambda: self.policy_monitor.guard.reason(time.monotonic()))
+                if self.policy_monitor else None
+            )
             if "g1" in self.config["ROBOT_TYPE"]:
                 if self.config["enable_waist"]:
                     self.band_attached_link = self.mj_model.body("pelvis").id
@@ -387,6 +401,10 @@ class DefaultEnv:
         return obs
 
     def sim_step(self):
+        if self.policy_monitor:
+            self.policy_monitor.update(
+                self.unitree_bridge, bool(self.elastic_band and self.elastic_band.enable), self.mj_data.qpos[2]
+            )
         self.obs = self.prepare_obs()
         self.unitree_bridge.PublishLowState(self.obs)
         if self.unitree_bridge.joystick:
@@ -454,7 +472,14 @@ class DefaultEnv:
 
     def update_viewer(self):
         if self.viewer is not None:
-            self.viewer.sync()
+            if self.viewer_state_only and not self._viewer_initial_sync:
+                # Transfer integration state instead of copying all model/data
+                # arrays on the physics thread. GUI inputs and perturbations
+                # still synchronize; runtime model edits require full sync.
+                self.viewer.sync(state_only=True)
+            else:
+                self.viewer.sync()
+            self._viewer_initial_sync = False
 
     def update_viewer_camera(self):
         if self.viewer is not None:
@@ -524,7 +549,13 @@ class DefaultEnv:
         return self_collision
 
     def reset(self):
+        if self.policy_monitor:
+            self.policy_monitor.guard.reset()
+            if self.elastic_band:
+                self.elastic_band.enable = True
+            print("[Simulation reset] Suspension reattached. Restart the stack before recalibrating.", flush=True)
         mujoco.mj_resetData(self.mj_model, self.mj_data)
+        mujoco.mj_forward(self.mj_model, self.mj_data)
 
 
 class BaseSimulator:
@@ -559,13 +590,12 @@ class BaseSimulator:
                 f"Only 'default' is supported in this minimal build."
             )
 
-        try:
+        # run_sim_loop can initialize DDS before constructing the environment.
+        if not self.config.get("CHANNEL_INITIALIZED", False):
             if self.config.get("INTERFACE", None):
                 ChannelFactoryInitialize(self.config["DOMAIN_ID"], self.config["INTERFACE"])
             else:
                 ChannelFactoryInitialize(self.config["DOMAIN_ID"])
-        except Exception as e:
-            print(f"Note: Channel factory initialization attempt: {e}")
 
         self.init_unitree_bridge()
         self.sim_env.set_unitree_bridge(self.unitree_bridge)
@@ -648,6 +678,9 @@ class BaseSimulator:
     def close(self):
         self._running = False
         try:
+            if getattr(self.sim_env, "policy_monitor", None) is not None:
+                self.sim_env.policy_monitor.close()
+                self.sim_env.policy_monitor = None
             if self.sim_env.image_publish_process is not None:
                 self.sim_env.image_publish_process.stop()
             if self.sim_env.viewer is not None:

@@ -73,8 +73,14 @@ def test_body_updates_without_vendor_timestamp():
     frame = sample(sdk, fresh, 0, 0.)
     assert frame["body"] is not None
     assert frame["body_update_sequence"] == 1
+    assert frame["input_update_sequences"] == sdk.updates
+    sdk.get_body_input_timing = lambda: dict(body_sequence=1, headset_frame_unix_ns=123)
+    assert sample(sdk, fresh, 0, 0.)['body_input_timing']['headset_frame_unix_ns'] == 123
+    sdk.get_body_input_timing = lambda: dict(body_sequence=2, headset_frame_unix_ns=456)
+    assert 'body_input_timing' not in sample(sdk, fresh, 0, 0.)
     sdk.body[0, 0] = .1
     sdk.updates["body"] += 1
+    assert frame["input_update_sequences"]["body"] == 1  # Snapshot, not the mutable SDK dictionary.
     assert sample(sdk, fresh, 1, .3)["body"] is not None
     assert sample(sdk, fresh, 2, .6)["body"] is None
 
@@ -119,3 +125,56 @@ def test_stationary_controllers_keep_buttons_until_packets_stop():
 
 def test_no_packets_never_counts_as_tracked():
     assert FreshPoses().read("head", [[0., 1., 0., 0., 0., 0., 1.]], 0., stamp=0) is None
+
+
+def test_bridge_retains_sdk_stall_until_next_publication(monkeypatch):
+    import msgpack
+    import sys
+    import zmq
+    from gear_sonic.scripts import pico_sim_bridge as bridge
+
+    clock = [0]
+    calls = [0]
+    sleeps = [0]
+    sent, closed = [], []
+
+    def updates():
+        calls[0] += 1
+        if calls[0] == 2:
+            clock[0] += 25_000_000  # SDK getter stalls while body counter stays fixed.
+        return dict(head=0, left=0, right=0, body=2 if calls[0] == 4 else 1)
+
+    def sleep(duration):
+        clock[0] += round(duration * 1e9)
+        sleeps[0] += 1
+        if sleeps[0] == 4:
+            raise KeyboardInterrupt
+
+    def no_feedback(flags):
+        raise zmq.Again()
+
+    publisher = SimpleNamespace(setsockopt=lambda *a: None, bind=lambda *a: None,
+                                send=sent.append, send_multipart=sent.append, close=lambda **kw: None)
+    feedback = SimpleNamespace(setsockopt=lambda *a: None, connect=lambda *a: None,
+                               recv_multipart=no_feedback, close=lambda **kw: None)
+    context = SimpleNamespace(socket=lambda kind: publisher if kind == zmq.PUB else feedback,
+                              term=lambda: None)
+    sdk = SimpleNamespace(
+        init=lambda: None, close=lambda: closed.append(True),
+        get_input_update_sequences=updates,
+        get_headset_pose=lambda: [0., 0., 0., 0., 0., 0., 1.],
+        get_left_controller_pose=lambda: [0., 0., 0., 0., 0., 0., 1.],
+        get_right_controller_pose=lambda: [0., 0., 0., 0., 0., 0., 1.],
+        is_body_data_available=lambda: True,
+        get_body_joints_pose=lambda: np.tile([0., 1., 0., 0., 0., 0., 1.], (24, 1)),
+    )
+    monkeypatch.setitem(sys.modules, "xrobotoolkit_sdk", sdk)
+    monkeypatch.setattr(bridge.zmq, "Context", lambda: context)
+    monkeypatch.setattr(bridge, "time", SimpleNamespace(monotonic_ns=lambda: clock[0], sleep=sleep))
+    bridge.main()
+    frames = [msgpack.unpackb(raw[len(bridge.TRACKING_TOPIC):], raw=False) for raw in sent]
+    assert [frame["body_update_sequence"] for frame in frames] == [1, 2]
+    assert frames[-1]["sdk_counter_read_max_ms"] == 25
+    assert frames[-1]["bridge_poll_interval_max_ms"] == 26
+    assert frames[-1]["body"] is not None
+    assert closed == [True]

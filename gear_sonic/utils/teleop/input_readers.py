@@ -205,6 +205,7 @@ class TrackingReader:
         self._three_point: tuple[str, Any] | None = None
         self._input_timestamp_ns = 0
         self._last_body_ns: int | None = None
+        self._last_body_received_ns: int | None = None
         self._last_body_update_sequence: int | None = None
         self._fps_ema = 0.0
         # Opt in only for pico_sim_bridge on this PC: remote monotonic clocks
@@ -253,9 +254,15 @@ class TrackingReader:
         )
 
     def get_latest(self) -> dict[str, Any] | None:
-        """Latest tracked body sample (body-only consumers gate on its timestamp)."""
+        """Latest fresh body sample; head/controller traffic cannot renew it."""
         with self._lock:
+            if not self._body_live():
+                return None
             return self._latest
+
+    def _body_live(self) -> bool:
+        return (self._last_body_received_ns is not None
+                and 0 <= self._clock() - self._last_body_received_ns <= INPUT_STALE_AFTER_S * 1e9)
 
     def get_controller_data(self) -> dict[str, Any] | None:
         with self._lock:
@@ -263,7 +270,12 @@ class TrackingReader:
 
     def get_tracking(self) -> Tracking:
         with self._lock:
-            return self._tracking if self._live() else Tracking()
+            if not self._live():
+                return Tracking()
+            if self._tracking.body and not self._body_live():
+                return Tracking(head=self._tracking.head, controllers=self._tracking.controllers,
+                                hands=self._tracking.hands)
+            return self._tracking
 
     def get_timestamp_ns(self) -> int:
         with self._lock:
@@ -294,6 +306,9 @@ class TrackingReader:
             return None
         source, data = three_point
         if source == "body":
+            with self._lock:
+                if not self._body_live():
+                    return None
             return source, data
         return source, synthesize_three_point_body(*data)
 
@@ -366,3 +381,9 @@ class TrackingReader:
                 self._input_advanced.notify_all()
             if sample is not None:
                 self._latest = sample
+                self._last_body_received_ns = now_ns
+                if self._timing is not None:
+                    timing = frame.get('body_input_timing', {})
+                    receipt = timing.get('sdk_receipt_monotonic_ns') if isinstance(timing, dict) else None
+                    if isinstance(receipt, int) and 0 < receipt <= now_ns:
+                        self._last_body_received_ns = receipt

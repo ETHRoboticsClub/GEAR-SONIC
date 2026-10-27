@@ -61,8 +61,6 @@ struct MotionSequence;
  */
 class StreamedMotionMerger {
 public:
-    /// Compile-time toggle for debug log output.
-    static constexpr bool DEBUG_LOGGING = true;
     /// Number of already-consumed frames to retain before the playback cursor
     /// (provides look-back for interpolation / blending).
     static constexpr int HISTORY_FRAMES = 5;
@@ -105,7 +103,7 @@ public:
         int num_smpl_poses = 0;   ///< SMPL pose parameters per frame.
     };
     
-    StreamedMotionMerger() {
+    explicit StreamedMotionMerger(bool verbose = false) : verbose_(verbose) {
         Reset();
     }
     
@@ -136,7 +134,7 @@ public:
         int incoming_frame_start = static_cast<int>(data.frame_indices[0]);
         int incoming_frame_end = static_cast<int>(data.frame_indices[data.num_frames - 1]);
         
-        if constexpr (DEBUG_LOGGING) {
+        if (verbose_) {
             std::cout << "[StreamedMotionMerger] Processing " << data.num_frames << " frames, "
                       << "incoming_frame_start=" << incoming_frame_start 
                       << ", frame_step=" << frame_step << std::endl;
@@ -182,7 +180,7 @@ public:
         // Update total timesteps
         new_motion->timesteps = merge_dst_frame + data.num_frames;
         
-        if constexpr (DEBUG_LOGGING) {
+        if (verbose_) {
             std::cout << "[StreamedMotionMerger] Merged motion: " << new_motion->timesteps 
                       << " frames (copied: " << merge_dst_frame << " + incoming: " << data.num_frames << ")" << std::endl;
         }
@@ -208,6 +206,7 @@ public:
     }
     
 private:
+    bool verbose_ = false;
     std::shared_ptr<MotionSequence> streamed_motion_;
     int stream_window_start_ = 0;
     
@@ -287,7 +286,7 @@ private:
 
         int stream_window_end = stream_window_start_ + frame_step * (streamed_motion_->timesteps - 1);
 
-        if (DEBUG_LOGGING) {
+        if (verbose_) {
             std::cout << "[StreamedMotionMerger] incoming_frame_start: " << incoming_frame_start
                       << ", incoming_frame_end: " << incoming_frame_end
                       << ", stream_window_start_: " << stream_window_start_
@@ -300,7 +299,7 @@ private:
 
         // Check for incoming data older than current window
         if (incoming_frame_start <= stream_window_start_) {
-            if constexpr (DEBUG_LOGGING) {
+            if (verbose_) {
                 std::cout << "[StreamedMotionMerger] WARNING: incoming_frame_start (" << incoming_frame_start
                           << ") < stream_window_start_ (" << stream_window_start_ << ") - forcing catch-up" << std::endl;
             }
@@ -309,7 +308,7 @@ private:
             did_catchup = true;
             return;
         } else if (incoming_frame_end <= stream_window_end) {
-            if constexpr (DEBUG_LOGGING) {
+            if (verbose_) {
                 std::cout << "[StreamedMotionMerger] WARNING: incoming_frame_end (" << incoming_frame_end
                           << ") <= stream_window_end (" << stream_window_end << ") - forcing catch-up" << std::endl;
             }
@@ -334,7 +333,7 @@ private:
             merge_dst_frame = 0;
             did_catchup = true;
             
-            if constexpr (DEBUG_LOGGING) {
+            if (verbose_) {
                 std::cout << "[StreamedMotionMerger] CATCH-UP: gap too large or old data expired" << std::endl;
             }
         } else {
@@ -404,7 +403,7 @@ private:
         int copy_dst_idx = (frame_step > 0) ? (start_offset_new / frame_step) : 0;
         int copy_count = (frame_step > 0) ? (overlap_span / frame_step) : 0;
         
-        if constexpr (DEBUG_LOGGING) {
+        if (verbose_) {
             std::cout << "[StreamedMotionMerger] Copying old data: "
                       << "global [" << overlap_start_global << ".." << (overlap_end_global-1) << "] → "
                       << "new_motion[" << copy_dst_idx << ".." << (copy_dst_idx + copy_count - 1) << "]" << std::endl;

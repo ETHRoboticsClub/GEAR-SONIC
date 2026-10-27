@@ -336,6 +336,15 @@ class SimLoopConfig(BaseConfig):
     mp_start_method: str = "spawn"
     """Multiprocessing start method"""
 
+    viewer_state_only: bool = False
+    """Use faster viewer synchronization for scenes without runtime model edits."""
+
+    guard_policy_release: bool = False
+    """Block suspension release until live policy feedback and powered DDS commands arrive."""
+
+    readiness_status_path: str = ""
+    """Optional local JSON status file for the PICO workflow's readiness check."""
+
     enable_image_publish: bool = False
     """Enable image publishing in simulation"""
 

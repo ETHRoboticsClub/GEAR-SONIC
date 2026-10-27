@@ -83,6 +83,7 @@ def sample(xrt, fresh, sequence, now, updates=None):
     frame = {
         "sequence": sequence, "sample_time_ns": time.monotonic_ns(),
         "body_update_sequence": int(updates["body"]),
+        "input_update_sequences": {key: int(updates[key]) for key in ("head", "left", "right", "body")},
         "head": None if head is None else head[0].tolist(),
         "body": None,
     }
@@ -99,6 +100,12 @@ def sample(xrt, fresh, sequence, now, updates=None):
                 "positions": body[:, :3].ravel().tolist(),
                 "rotations": body[:, 3:].ravel().tolist(),
             }
+            if hasattr(xrt, "get_body_input_timing"):
+                timing = xrt.get_body_input_timing()
+                # SDK callbacks can advance while Python reads separate getters.
+                # Never attribute another sample's timestamp to this body sequence.
+                if timing.get("body_sequence") == frame["body_update_sequence"]:
+                    frame["body_input_timing"] = timing
     return frame
 
 
@@ -118,6 +125,8 @@ def main():
     last_stamp = None
     last_status = None
     last_sample = 0.0
+    last_poll_ns = None
+    poll_interval_max_ms = sdk_read_max_ms = 0.0
     xrt.init()
     LOG.info("PICO simulation bridge ready; waiting for headset data. Feedback :5557 -> :5558")
     try:
@@ -128,12 +137,22 @@ def main():
                     publisher.send_multipart(feedback.recv_multipart(zmq.NOBLOCK))
                 except zmq.Again:
                     break
-            now = time.monotonic()
+            poll_started_ns = time.monotonic_ns()
             updates = xrt.get_input_update_sequences()
+            poll_finished_ns = time.monotonic_ns()
+            sdk_read_max_ms = max(sdk_read_max_ms, (poll_finished_ns - poll_started_ns) / 1e6)
+            if last_poll_ns is not None:
+                poll_interval_max_ms = max(poll_interval_max_ms, (poll_finished_ns - last_poll_ns) / 1e6)
+            last_poll_ns = poll_finished_ns
+            now = poll_finished_ns / 1e9
             stamp = tuple(updates[key] for key in ("head", "left", "right", "body"))
             if stamp != last_stamp or now - last_sample >= 0.05:
                 frame = sample(xrt, fresh, sequence, now, updates)
+                # Preserve short polling/SDK stalls even if they end between publications.
+                frame["bridge_poll_interval_max_ms"] = poll_interval_max_ms
+                frame["sdk_counter_read_max_ms"] = sdk_read_max_ms
                 publisher.send(TRACKING_TOPIC + msgpack.packb(frame, use_bin_type=True))
+                poll_interval_max_ms = sdk_read_max_ms = 0.0
                 sequence += 1
                 last_stamp, last_sample = stamp, now
                 status = tuple(frame.get(k) is not None for k in

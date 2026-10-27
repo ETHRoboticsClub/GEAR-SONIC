@@ -1,5 +1,9 @@
 # PICO teleoperation on this PC
 
+For the current step-by-step session procedure and connection recovery, use the
+[operator guide](pico_sim_operator_guide.md). It also explains the startup and
+suspension-release protections added on 2026-10-27.
+
 For the measured before/after results of each optimization, see
 [PICO → MuJoCo latency improvements](pico_sim_latency.md).
 
@@ -27,8 +31,10 @@ bash install_scripts/run_pico_sim.sh status
 bash install_scripts/run_pico_sim.sh stop
 ```
 
-`status` reports whether each process is running or has exited; it does not
-claim the headset is connected. Logs are in `.local/pico-sim/logs/`.
+`status` reports process state, hotspot configuration, live tracking, policy
+feedback, and the simulator's release-readiness snapshot. A running process
+alone is not a connected headset. Logs are in `.local/pico-sim/logs/`.
+Each new session archives the previous component logs in a dated subdirectory.
 Stopping the session also closes its simulator. A service reused from another
 session is left running. After stopping with the PICO button combination,
 stop and start the launcher to begin a fresh session.
@@ -38,10 +44,11 @@ stop and start the launcher to begin a fresh session.
 1. Install [XRoboToolkit PICO 1.1.1](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/releases/download/v1.1.1/XRoboToolkit-PICO-1.1.1.apk)
   on the headset if needed. Use the headset browser with Developer Mode enabled;
    the installed application appears under Unknown applications.
-2. Connect the headset to the same reachable network as this PC. The PC's Wi-Fi
-   IPv4 address during installation was **`10.5.11.190`**. Check `hostname -I`
-   if the network changes; do not use the Docker `172.17.0.1` address.
-3. In XRoboToolkit, set **PC Service** to that Wi-Fi address, connect, and confirm
+2. Connect the headset to the saved **`teleop-sim`** hotspot. The launcher
+   activates the existing profile. Check `bash install_scripts/run_pico_sim.sh network`
+   for its address and current band; the hotspot PC address is **`10.42.0.1`**.
+   Avoid choosing among unrelated addresses from `hostname -I`.
+3. In XRoboToolkit, set **PC Service** to that hotspot address, connect, and confirm
    **WORKING**. Enable **Head**, **Controller**, and **Send**.
 4. For whole-body teleop, pair and calibrate the two ankle motion trackers,
    then select **Full body** in XRoboToolkit. See the existing
@@ -49,10 +56,13 @@ stop and start the launcher to begin a fresh session.
 5. The bridge window should report `head=True left=True right=True body=True`.
    Without ankle/body tracking, planner and head/controller three-point input
    are available; full-body POSE mode requires body tracking.
-6. Stand upright with upper arms at your sides, elbows bent 90 degrees forward,
+6. Wait for the manager's controls to appear: it now waits for controller
+   `Init Done` before accepting calibration/start. Stand upright with upper arms at your sides, elbows bent 90 degrees forward,
    and palms inward. Press **A+B+X+Y** once to calibrate and engage the policy.
-7. Click the **MuJoCo window** and press **9** to release the initial suspension
-   band once the policy is active. The band starts enabled on every fresh launch.
+7. Run `bash install_scripts/run_pico_sim.sh status`; require live policy
+   feedback and **RELEASE READY**. Click the **MuJoCo window** and press **9**.
+   Release is blocked until policy feedback and powered DDS leg commands have
+   been continuously fresh for 0.5 seconds. The band starts enabled on every fresh launch.
 8. Match the robot's posture, then press **A+X** to enter full-body **POSE** mode.
    **A+X** returns to planner mode. With head and controller tracking, clicking
    the **left stick** from planner mode enters calibrated three-point control.

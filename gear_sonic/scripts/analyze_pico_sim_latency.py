@@ -10,6 +10,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from gear_sonic.tests.teleop.fakes import decode
+from gear_sonic.utils.teleop.transport_timing import summarize_message_timing
 
 parser = argparse.ArgumentParser()
 parser.add_argument('capture', type=Path)
@@ -41,7 +42,11 @@ mapping = list(map(int, re.search(r'isaaclab_to_mujoco\s*=\s*\{([^}]+)', source)
 frames, feedback = {}, []
 timings, arrivals = defaultdict(list), defaultdict(list)
 modes = Counter()
-last_body_sequence = None
+last_device_sequence = {}
+tracking_frames = 0
+missing_tracking = Counter()
+observer_skipped_updates = Counter()
+message_timings = []
 for t, raw in rows:
     if raw.startswith(b'pose'):
         arrivals['pose'].append(t)
@@ -65,10 +70,31 @@ for t, raw in rows:
         modes[int(f['stream_mode'][0])] += 1
     elif raw.startswith(b'tracking'):
         f = msgpack.unpackb(raw[8:], raw=False)
-        sequence = f.get('body_update_sequence')
-        if f.get('body') is not None and sequence is not None and sequence != last_body_sequence:
-            arrivals['fresh_body'].append(t)
-            last_body_sequence = sequence
+        tracking_frames += 1
+        if f.get('sample_time_ns'):
+            timings['bridge_to_capture_ms'].append((t - f['sample_time_ns'] / 1e9) * 1000)
+        sequences = f.get('input_update_sequences',
+                          f.get('device_update_sequences', {'body': f.get('body_update_sequence')}))
+        for field in ('bridge_poll_interval_max_ms', 'sdk_counter_read_max_ms'):
+            if field in f:
+                timings[field.replace('_max_ms', '_reported_max_ms')].append(float(f[field]))
+        for device, field in (('head', 'head'), ('left', 'left_controller'),
+                              ('right', 'right_controller'), ('body', 'body')):
+            missing_tracking[device] += int(f.get(field) is None)
+            sequence = sequences.get(device)
+            previous = last_device_sequence.get(device)
+            if f.get(field) is not None and sequence is not None and sequence > 0 and sequence != previous:
+                arrivals['fresh_' + device].append(t)
+                timing = f.get('body_input_timing', {}) if device == 'body' else {}
+                if (isinstance(timing, dict) and timing.get('body_sequence') == sequence
+                        and timing.get('headset_frame_unix_ns', 0) > 0
+                        and timing.get('sdk_receipt_monotonic_ns', 0) > 0):
+                    message_timings.append(timing)
+                    timings['sdk_callback_to_capture_ms'].append(
+                        t * 1000 - timing['sdk_receipt_monotonic_ns'] / 1e6)
+                if previous is not None and sequence > previous:
+                    observer_skipped_updates[device] += max(0, sequence - previous - 1)
+                last_device_sequence[device] = sequence
 counts = Counter(tuple(x[1]) for x in frames.values())
 ids = [i for i, x in frames.items() if counts[tuple(x[1])] == 1]
 matched = 0
@@ -94,15 +120,24 @@ def stats(values):
 summary = {'sample_count': matched, 'feedback_total': len(feedback), 'modes': dict(modes),
            'capture_seconds': capture_seconds, 'pose_segments': len(segments),
            'selected_pose_seconds': rows[-1][0] - rows[0][0],
-           'timings': {k:stats(v) for k,v in timings.items()}, 'intervals': {}}
+           'timings': {k:stats(v) for k,v in timings.items()}, 'intervals': {},
+           'tracking_frames': tracking_frames, 'tracking_missing_frames': dict(missing_tracking),
+           'sdk_updates_skipped_by_observer': dict(observer_skipped_updates)}
+summary['tracking_message_timing'] = summarize_message_timing(message_timings)
 for key, times in arrivals.items():
     gaps = np.diff(times)*1000
     summary['intervals'][key] = {'count': len(times), 'gap_ms': stats(gaps),
-        'percent_over_20ms': round(float(np.mean(gaps>20)*100),3),
-        'percent_over_30ms': round(float(np.mean(gaps>30)*100),3)}
+        'percent_over_20ms': round(float(np.mean(gaps>20)*100),3) if len(gaps) else None,
+        'percent_over_30ms': round(float(np.mean(gaps>30)*100),3) if len(gaps) else None}
+summary['quality_notes'] = []
+if summary['selected_pose_seconds'] < 30:
+    summary['quality_notes'].append('Less than 30 seconds of continuous POSE; repeat for a useful comparison.')
+if len(feedback) and matched < len(feedback) * .5:
+    summary['quality_notes'].append('Fewer than half of feedback samples matched unique references; use varied gentle arm motion.')
 summary['note'] = ('Receipt is PC manager receipt, not headset capture. Feedback is received after action calculation; '
                    'does not measure DDS delivery or visible response. Pose preparation includes SMPL; do not add them. '
-                   'SMPL statistics cover published packets. Modes other than POSE disable reference matching.')
+                   'SMPL statistics cover published packets. Modes other than POSE disable reference matching. '
+                   'SDK counter jumps can reflect bridge/observer coalescing, not necessarily network packet loss.')
 output = args.capture.with_name(args.capture.stem+'-components.json')
 output.write_text(json.dumps(summary,indent=2)+'\n')
 print(json.dumps(summary,indent=2))

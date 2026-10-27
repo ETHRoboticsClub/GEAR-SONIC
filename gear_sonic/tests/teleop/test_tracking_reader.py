@@ -128,6 +128,26 @@ def test_nothing_received():
     assert reader.get_latest() is None
     assert reader.get_controller_data() is None
     assert reader.get_input_timestamp_ns() == 0
+
+
+def test_head_updates_do_not_make_a_cached_body_fresh():
+    reader = fakes.reader()
+    fakes.feed(reader, fakes.raw(body=fakes.body(_body_positions())), T0)
+    assert reader.get_latest() is not None
+    fakes.feed(reader, _quest(), T0 + 250 * MS)
+    assert reader.get_controller_data() is not None
+    assert reader.get_latest() is None
+
+
+def test_local_sdk_receipt_age_is_not_hidden_by_a_fresh_bridge_stamp():
+    clock = fakes.Clock()
+    reader = TrackingReader(clock=clock, local_pico_timing=True)
+    clock.now_ns = T0 + 300 * MS
+    frame = {**fakes.raw(body=fakes.body(_body_positions())),
+             'sample_time_ns': clock.now_ns,
+             'body_input_timing': {'sdk_receipt_monotonic_ns': T0}}
+    reader._update(frame, clock.now_ns)
+    assert reader.get_latest() is None
     assert reader.get_three_point_body() is None
 
 

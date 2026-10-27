@@ -1,0 +1,95 @@
+{
+  "tracking_frames": 600,
+  "capture": ".local/pico-sim/logs/pico-latency-20261027-190348-100649.msgpack",
+  "baseline_script": ".local/pico-sim/latency-round2-baseline/pico_manager_thread_server.py",
+  "runs": [
+    {
+      "implementation": "before",
+      "published_packets": 320,
+      "run_once_ms": {
+        "p50": 3.586744,
+        "p95": 3.8008619999999995,
+        "max": 5.52225
+      },
+      "preparation_ms": {
+        "p50": 3.611354,
+        "p95": 3.8228630000000003,
+        "max": 5.42602
+      },
+      "mapping_ms": {
+        "p50": 1.958196,
+        "p95": 2.0713297,
+        "max": 2.832674
+      }
+    },
+    {
+      "implementation": "after",
+      "published_packets": 320,
+      "run_once_ms": {
+        "p50": 2.5564904999999998,
+        "p95": 2.766511,
+        "max": 3.254704
+      },
+      "preparation_ms": {
+        "p50": 2.541556,
+        "p95": 2.802861,
+        "max": 3.192304
+      },
+      "mapping_ms": {
+        "p50": 0.993779,
+        "p95": 1.0991573000000001,
+        "max": 1.423517
+      }
+    },
+    {
+      "implementation": "after",
+      "published_packets": 320,
+      "run_once_ms": {
+        "p50": 2.53663,
+        "p95": 2.7488685,
+        "max": 3.339554
+      },
+      "preparation_ms": {
+        "p50": 2.542645,
+        "p95": 2.7651763,
+        "max": 3.276714
+      },
+      "mapping_ms": {
+        "p50": 0.991019,
+        "p95": 1.0550447,
+        "max": 1.716007
+      }
+    },
+    {
+      "implementation": "before",
+      "published_packets": 320,
+      "run_once_ms": {
+        "p50": 3.663308,
+        "p95": 4.059499,
+        "max": 5.022801
+      },
+      "preparation_ms": {
+        "p50": 3.681904,
+        "p95": 4.085887700000001,
+        "max": 4.915621
+      },
+      "mapping_ms": {
+        "p50": 1.994327,
+        "p95": 2.283177,
+        "max": 2.696665
+      }
+    }
+  ],
+  "output_max_absolute_errors": {
+    "smpl_pose": 0,
+    "smpl_joints": 1.9222497940063477e-06,
+    "body_quat_w": 0,
+    "joint_pos": 0,
+    "vr_position": 0,
+    "vr_orientation": 0,
+    "left_hand_joints": 0,
+    "right_hand_joints": 0,
+    "heading_increment": 0
+  },
+  "note": "Offline CPU replay with calibrated 3-point processing and no sleep. Not a live end-to-end latency measurement. Model context and reference timestamps stay unchanged."
+}
