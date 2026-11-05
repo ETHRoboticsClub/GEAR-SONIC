@@ -605,12 +605,19 @@ def quaternion_multiply_np(a, b):
 def decompose_rotation_aa(rotation_aa, v2):
     angle = np.linalg.norm(rotation_aa, axis=1)[:, None]
     w = np.cos(angle / 2)
-    v = np.sin(angle / 2) * rotation_aa / angle
+    # sin(angle / 2) / angle tends to 1/2 at zero. Straight limbs can
+    # produce exactly zero rotation during PICO tracking/calibration.
+    v = 0.5 * np.sinc(angle / (2 * np.pi)) * rotation_aa
     q = np.concatenate([w, v], axis=1)
 
     v_twist = np.dot(v, v2)[:, None] * v2
     q_twist = np.concatenate([w, v_twist], axis=1)
-    q_twist = q_twist / np.linalg.norm(q_twist, axis=1)[:, None]
+    twist_norm = np.linalg.norm(q_twist, axis=1, keepdims=True)
+    # A half-turn perpendicular to the twist axis has no unique twist.
+    # Choose identity twist and leave the complete rotation in the swing.
+    singular = twist_norm[:, 0] < 1e-12
+    q_twist = q_twist / np.where(singular[:, None], 1.0, twist_norm)
+    q_twist[singular] = [1, 0, 0, 0]
 
     q_twist_inv = q_twist * np.array([1, -1, -1, -1])
     q_swing = quaternion_multiply_np(q_twist_inv, q)

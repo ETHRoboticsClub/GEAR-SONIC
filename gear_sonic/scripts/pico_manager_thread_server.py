@@ -644,8 +644,10 @@ def _pose_stream_common(
         stop_event = threading.Event()
 
     try:
+        seen_input_ns = reader.get_input_timestamp_ns()
         while not stop_event.is_set():
             streamer.run_once()
+            seen_input_ns = reader.wait_for_input(seen_input_ns, 0.02)
     except KeyboardInterrupt:
         pass
     finally:
@@ -954,6 +956,118 @@ class ThreePointPose:
         print(f"[{self.log_prefix}] Wrist recalibration pending (neck preserved, measured q)")
 
 
+def _smpl_wrist_joint_positions(use_pose):
+    ##### From @Jiefeng for directly setting the joint position ######
+    joint_pos = np.zeros(29)
+    body_pose = use_pose.reshape(-1, 21, 3)
+
+    SMPL_L_ELBOW_IDX = 17
+    SMPL_L_WRIST_IDX = 19
+    SMPL_R_ELBOW_IDX = 18
+    SMPL_R_WRIST_IDX = 20
+
+    # G1_L_ELBOW_IDX = 0
+    G1_L_WRIST_ROLL_IDX = 23
+    G1_L_WRIST_PITCH_IDX = 25
+    G1_L_WRIST_YAW_IDX = 27
+
+    # G1_R_ELBOW_IDX = 0
+    G1_R_WRIST_ROLL_IDX = 24  # Done
+    G1_R_WRIST_PITCH_IDX = 26
+    G1_R_WRIST_YAW_IDX = 28
+    smpl_l_elbow_aa = body_pose[:, SMPL_L_ELBOW_IDX]
+    smpl_l_wrist_aa = body_pose[:, SMPL_L_WRIST_IDX]
+    smpl_r_elbow_aa = body_pose[:, SMPL_R_ELBOW_IDX]
+    smpl_r_wrist_aa = body_pose[:, SMPL_R_WRIST_IDX]
+
+    g1_l_elbow_axis = np.array([0, 1, 0])
+    g1_l_elbow_q_twist, g1_l_elbow_q_swing = decompose_rotation_aa(
+        smpl_l_elbow_aa, g1_l_elbow_axis
+    )
+
+    g1_r_elbow_axis = np.array([0, 1, 0])
+    g1_r_elbow_q_twist, g1_r_elbow_q_swing = decompose_rotation_aa(
+        smpl_r_elbow_aa, g1_r_elbow_axis
+    )
+
+    # Move elbow roll/yaw into wrist while preserving wrist pitch from SMPL
+    l_elbow_swing_euler = R.from_quat(g1_l_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
+        "XYZ", degrees=False
+    )
+    r_elbow_swing_euler = R.from_quat(g1_r_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
+        "XYZ", degrees=False
+    )
+
+    l_wrist_euler = R.from_rotvec(smpl_l_wrist_aa).as_euler("XYZ", degrees=False)
+    r_wrist_euler = R.from_rotvec(smpl_r_wrist_aa).as_euler("XYZ", degrees=False)
+
+    g1_l_wrist_roll = l_elbow_swing_euler[:, 0] + l_wrist_euler[:, 0]
+    g1_l_wrist_pitch = -l_wrist_euler[:, 1]
+    g1_l_wrist_yaw = l_elbow_swing_euler[:, 2] + l_wrist_euler[:, 2]
+
+    g1_r_wrist_roll = -(r_elbow_swing_euler[:, 0] + r_wrist_euler[:, 0])
+    g1_r_wrist_pitch = -r_wrist_euler[:, 1]
+    g1_r_wrist_yaw = r_elbow_swing_euler[:, 2] + r_wrist_euler[:, 2]
+
+    joint_pos[G1_L_WRIST_ROLL_IDX] = g1_l_wrist_roll[0]
+    joint_pos[G1_L_WRIST_PITCH_IDX] = -g1_l_wrist_pitch[0]
+    joint_pos[G1_L_WRIST_YAW_IDX] = g1_l_wrist_yaw[0]
+
+    joint_pos[G1_R_WRIST_ROLL_IDX] = g1_r_wrist_roll[0]
+    joint_pos[G1_R_WRIST_PITCH_IDX] = g1_r_wrist_pitch[0]
+    joint_pos[G1_R_WRIST_YAW_IDX] = g1_r_wrist_yaw[0]
+
+    return joint_pos
+
+
+class UniformPoseResampler:
+    """Resample fresh tracking onto a fixed grid without replaying a backlog.
+
+    Each output includes a frame index and its PC-monotonic sample time.
+    After a delayed update, emit at most the newest packet's worth of frames;
+    interpolate only between received samples, never extrapolate into the future.
+    """
+
+    def __init__(self, target_fps: int, max_frames: int):
+        if target_fps <= 0 or max_frames <= 0:
+            raise ValueError("target_fps and max_frames must be positive")
+        self.step_ns = round(1e9 / target_fps)
+        self.max_frames = max_frames
+        self.reset()
+
+    def reset(self):
+        self.origin_ns = None
+        self.previous = None
+        self.last_index = -1
+
+    def push(self, stamp_ns, pose, joints, quat):
+        if self.previous is not None and stamp_ns <= self.previous[0]:
+            return []
+        current = (stamp_ns, pose.copy(), joints.copy(), quat.copy())
+        if self.previous is None:
+            self.origin_ns = stamp_ns
+            self.previous = current
+            self.last_index = 0
+            return [(0, stamp_ns, *current[1:])]
+
+        prev_ns, prev_pose, prev_joints, prev_quat = self.previous
+        newest = (stamp_ns - self.origin_ns) // self.step_ns
+        first = max(self.last_index + 1, newest - self.max_frames + 1)
+        result = []
+        for index in range(first, newest + 1):
+            target_ns = self.origin_ns + index * self.step_ns
+            alpha = (target_ns - prev_ns) / (stamp_ns - prev_ns)
+            result.append((
+                index, target_ns,
+                _interp_pose_axis_angle(prev_pose, pose, alpha).astype(np.float32),
+                ((1.0 - alpha) * prev_joints + alpha * joints).astype(np.float32),
+                _quat_lerp_normalized(prev_quat, quat, alpha).astype(np.float32),
+            ))
+        self.previous = current
+        self.last_index = newest
+        return result
+
+
 class PoseStreamer:
     """Encapsulates the pose streaming loop state and logic."""
 
@@ -1025,12 +1139,9 @@ class PoseStreamer:
         self.frame_time = 0.95 / max(1, target_fps)
         self.frame_buffer = defaultdict(lambda: deque(maxlen=num_frames_to_send))
 
-        self.prev_stamp_ns = None
-        self.prev_smpl_pose_np = None
-        self.prev_smpl_joints_np = None
-        self.prev_body_quat_np = None
-        self.next_target_ns = None
-        self.frame_start = time.time()
+        self.resampler = UniformPoseResampler(target_fps, num_frames_to_send)
+        self.last_processed_stamp_ns = None
+        self.last_published_stamp_ns = None
 
         # Data collection button state tracking (edge-triggered)
         self.toggle_data_collection_last = False
@@ -1048,11 +1159,9 @@ class PoseStreamer:
 
     def on_mode_exit(self):
         self.frame_buffer.clear()
-        self.prev_stamp_ns = None
-        self.prev_smpl_pose_np = None
-        self.prev_smpl_joints_np = None
-        self.prev_body_quat_np = None
-        self.next_target_ns = None
+        self.resampler.reset()
+        self.last_processed_stamp_ns = None
+        self.last_published_stamp_ns = None
         self.buffer_cleared = True
         self.step = 0
 
@@ -1064,9 +1173,26 @@ class PoseStreamer:
             time.sleep(0.005)
             return
 
+        curr_stamp_ns = int(sample.get("timestamp_ns", 0))
+        if self.last_processed_stamp_ns is not None and curr_stamp_ns <= self.last_processed_stamp_ns:
+            return
+        self.last_processed_stamp_ns = curr_stamp_ns
         latest_data = compute_from_body_poses(
             self.parent_indices, self.device, sample["body_poses_np"]
         )
+        smpl_pose_np = (
+            latest_data["smpl_pose"].detach().cpu().numpy()[:, :63].reshape(-1, 21, 3)[0]
+        ).astype(np.float32)
+        smpl_joints_np = (
+            latest_data["smpl_joints_local"].detach().cpu().numpy()[0].astype(np.float32)
+        )
+        body_quat_np = (
+            latest_data["global_orient_quat"].detach().cpu().numpy()[0].astype(np.float32)
+        )
+        samples = self.resampler.push(curr_stamp_ns, smpl_pose_np, smpl_joints_np, body_quat_np)
+        if not samples:
+            return
+
         left_menu_button, left_trigger, right_trigger, left_grip, right_grip = get_controller_inputs(
             self.reader
         )
@@ -1093,107 +1219,6 @@ class PoseStreamer:
             right_trigger,
             right_grip,
         )
-        smpl_pose_np = (
-            latest_data["smpl_pose"].detach().cpu().numpy()[:, :63].reshape(-1, 21, 3)[0]
-        ).astype(np.float32)
-        smpl_joints_np = (
-            latest_data["smpl_joints_local"].detach().cpu().numpy()[0].astype(np.float32)
-        )
-        body_quat_np = (
-            latest_data["global_orient_quat"].detach().cpu().numpy()[0].astype(np.float32)
-        )
-        curr_stamp_ns = int(sample.get("timestamp_ns", 0))
-        step_ns = int(1e9 / max(1, self.target_fps))
-        if self.prev_stamp_ns is None:
-            self.prev_stamp_ns = curr_stamp_ns
-            self.prev_smpl_pose_np = smpl_pose_np
-            self.prev_smpl_joints_np = smpl_joints_np
-            self.prev_body_quat_np = body_quat_np
-            self.next_target_ns = curr_stamp_ns
-            return
-        if curr_stamp_ns <= self.prev_stamp_ns:
-            return
-        if self.next_target_ns is None:
-            self.next_target_ns = self.prev_stamp_ns + step_ns
-        if self.next_target_ns < self.prev_stamp_ns:
-            self.next_target_ns = self.prev_stamp_ns
-        if self.next_target_ns > curr_stamp_ns:
-            return
-        denom = float(curr_stamp_ns - self.prev_stamp_ns)
-        alpha = float(self.next_target_ns - self.prev_stamp_ns) / denom if denom > 0.0 else 1.0
-        if alpha < 0.0:
-            alpha = 0.0
-        elif alpha > 1.0:
-            alpha = 1.0
-        use_joints = (1.0 - alpha) * self.prev_smpl_joints_np + alpha * smpl_joints_np
-        use_pose = _interp_pose_axis_angle(self.prev_smpl_pose_np, smpl_pose_np, alpha).astype(
-            np.float32
-        )
-        use_body_quat = _quat_lerp_normalized(self.prev_body_quat_np, body_quat_np, alpha).astype(
-            np.float32
-        )
-        N = len(self.frame_buffer["frame_index"])
-
-        ##### From @Jiefeng for directly setting the joint position ######
-        joint_pos = np.zeros(29)
-        body_pose = use_pose.reshape(-1, 21, 3)
-
-        SMPL_L_ELBOW_IDX = 17
-        SMPL_L_WRIST_IDX = 19
-        SMPL_R_ELBOW_IDX = 18
-        SMPL_R_WRIST_IDX = 20
-
-        # G1_L_ELBOW_IDX = 0
-        G1_L_WRIST_ROLL_IDX = 23
-        G1_L_WRIST_PITCH_IDX = 25
-        G1_L_WRIST_YAW_IDX = 27
-
-        # G1_R_ELBOW_IDX = 0
-        G1_R_WRIST_ROLL_IDX = 24  # Done
-        G1_R_WRIST_PITCH_IDX = 26
-        G1_R_WRIST_YAW_IDX = 28
-        smpl_l_elbow_aa = body_pose[:, SMPL_L_ELBOW_IDX]
-        smpl_l_wrist_aa = body_pose[:, SMPL_L_WRIST_IDX]
-        smpl_r_elbow_aa = body_pose[:, SMPL_R_ELBOW_IDX]
-        smpl_r_wrist_aa = body_pose[:, SMPL_R_WRIST_IDX]
-
-        g1_l_elbow_axis = np.array([0, 1, 0])
-        g1_l_elbow_q_twist, g1_l_elbow_q_swing = decompose_rotation_aa(
-            smpl_l_elbow_aa, g1_l_elbow_axis
-        )
-
-        g1_r_elbow_axis = np.array([0, 1, 0])
-        g1_r_elbow_q_twist, g1_r_elbow_q_swing = decompose_rotation_aa(
-            smpl_r_elbow_aa, g1_r_elbow_axis
-        )
-
-        # Move elbow roll/yaw into wrist while preserving wrist pitch from SMPL
-        l_elbow_swing_euler = R.from_quat(g1_l_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
-            "XYZ", degrees=False
-        )
-        r_elbow_swing_euler = R.from_quat(g1_r_elbow_q_swing[:, [1, 2, 3, 0]]).as_euler(
-            "XYZ", degrees=False
-        )
-
-        l_wrist_euler = R.from_rotvec(smpl_l_wrist_aa).as_euler("XYZ", degrees=False)
-        r_wrist_euler = R.from_rotvec(smpl_r_wrist_aa).as_euler("XYZ", degrees=False)
-
-        g1_l_wrist_roll = l_elbow_swing_euler[:, 0] + l_wrist_euler[:, 0]
-        g1_l_wrist_pitch = -l_wrist_euler[:, 1]
-        g1_l_wrist_yaw = l_elbow_swing_euler[:, 2] + l_wrist_euler[:, 2]
-
-        g1_r_wrist_roll = -(r_elbow_swing_euler[:, 0] + r_wrist_euler[:, 0])
-        g1_r_wrist_pitch = -r_wrist_euler[:, 1]
-        g1_r_wrist_yaw = r_elbow_swing_euler[:, 2] + r_wrist_euler[:, 2]
-
-        joint_pos[G1_L_WRIST_ROLL_IDX] = g1_l_wrist_roll[0]
-        joint_pos[G1_L_WRIST_PITCH_IDX] = -g1_l_wrist_pitch[0]
-        joint_pos[G1_L_WRIST_YAW_IDX] = g1_l_wrist_yaw[0]
-
-        joint_pos[G1_R_WRIST_ROLL_IDX] = g1_r_wrist_roll[0]
-        joint_pos[G1_R_WRIST_PITCH_IDX] = g1_r_wrist_pitch[0]
-        joint_pos[G1_R_WRIST_YAW_IDX] = g1_r_wrist_yaw[0]
-
         # Process SMPL pose to get calibrated 3-point VR pose and update visualization
         # Pass SMPL local joints for optional body visualization in the VR3Pt viewer
         smpl_joints_for_vis = (
@@ -1206,11 +1231,12 @@ class PoseStreamer:
         )
         ##### From @Jiefeng for directly setting the joint position ######
 
-        self.frame_buffer["smpl_pose"].append(use_pose)
-        self.frame_buffer["smpl_joints"].append(use_joints)
-        self.frame_buffer["body_quat_w"].append(use_body_quat)
-        self.frame_buffer["frame_index"].append(int(self.step))
-        self.frame_buffer["joint_pos"].append(joint_pos)
+        for index, stamp_ns, use_pose, use_joints, use_body_quat in samples:
+            self.frame_buffer["smpl_pose"].append(use_pose)
+            self.frame_buffer["smpl_joints"].append(use_joints)
+            self.frame_buffer["body_quat_w"].append(use_body_quat)
+            self.frame_buffer["frame_index"].append(index)
+            self.frame_buffer["joint_pos"].append(_smpl_wrist_joint_positions(use_pose))
         pico_dt = float(sample.get("dt", 0.0))
         pico_fps = float(sample.get("fps", 0.0))
         N = len(self.frame_buffer["frame_index"])
@@ -1223,7 +1249,11 @@ class PoseStreamer:
 
         # Get joystick axes for yaw accumulation
         _, _, rx, _ = get_controller_axes(self.reader)
-        self.yaw_accumulator.update(rx, self.frame_time)
+        output_stamp_ns = samples[-1][1]
+        output_dt = (self.frame_time if self.last_published_stamp_ns is None else
+                     (output_stamp_ns - self.last_published_stamp_ns) * 1e-9)
+        self.yaw_accumulator.update(rx, output_dt)
+        self.last_published_stamp_ns = output_stamp_ns
 
         # Only send if buffer is full and we're not waiting for fresh data
         if buffer_is_full and not self.buffer_cleared:
@@ -1265,12 +1295,7 @@ class PoseStreamer:
                 np.savez_compressed(out_path, **numpy_data)
                 self.record_idx += 1
 
-        self.step += 1
-        self.next_target_ns += step_ns
-        self.prev_stamp_ns = curr_stamp_ns
-        self.prev_smpl_pose_np = smpl_pose_np
-        self.prev_smpl_joints_np = smpl_joints_np
-        self.prev_body_quat_np = body_quat_np
+        self.step = samples[-1][0] + 1
         self.fps_counter += 1
         current_time = time.time()
         if current_time - self.last_fps_report >= 5.0:
@@ -1278,10 +1303,6 @@ class PoseStreamer:
             print(f"[{self.log_prefix}] FPS: {fps:.2f}, Step: {self.step}")
             self.fps_counter = 0
             self.last_fps_report = current_time
-        elapsed = time.time() - self.frame_start
-        if elapsed < self.frame_time:
-            time.sleep(self.frame_time - elapsed)
-        self.frame_start = time.time()
 
 
 def run_pico(
