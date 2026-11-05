@@ -36,6 +36,7 @@ import torch
 import zmq
 
 from gear_sonic.utils.teleop import input_readers
+from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, prepare_cpu_kinematics
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
 from gear_sonic.trl.utils.torch_transform import (
@@ -358,10 +359,14 @@ def process_smpl_joints(body_pose, global_orient, transl):
     global_orient_new = quaternion_to_angle_axis(global_orient_quat)
 
     # Compute joints and vertices using SMPL model (single forward pass)
-    joints = compute_human_joints(
-        body_pose=body_pose[..., :63],
-        global_orient=global_orient_new,
-    )  # (*, 24, 3)
+    if (body_pose.device.type == "cpu" and not body_pose.requires_grad
+            and not global_orient_new.requires_grad):
+        joints = torch.from_numpy(human_joints_cpu(body_pose, global_orient_new))
+    else:
+        joints = compute_human_joints(
+            body_pose=body_pose[..., :63],
+            global_orient=global_orient_new,
+        )  # (*, 24, 3)
 
     # Apply base rotation removal and compute local joints
     if remove_smpl_base_rot is not None:
@@ -462,15 +467,11 @@ def compute_from_body_poses(parent_indices: list, device, body_poses_np: np.ndar
     global_rots = sRot.from_quat(global_quats, scalar_first=True)
     global_rots = global_rots * sRot.from_euler("y", 180, degrees=True)
 
-    local_rots = []
-    for i in range(24):
-        if parent_indices[i] == -1:
-            local_rots.append(global_rots[i])
-        else:
-            local_rot = global_rots[parent_indices[i]].inv() * global_rots[i]
-            local_rots.append(local_rot)
-
-    pose_aa = np.array([rot.as_rotvec() for rot in local_rots])
+    parents = np.asarray(parent_indices, dtype=np.intp)
+    roots = parents == -1
+    pose_aa = np.empty((24, 3))
+    pose_aa[roots] = global_rots[roots].as_rotvec()
+    pose_aa[~roots] = (global_rots[parents[~roots]].inv() * global_rots[~roots]).as_rotvec()
 
     body_pose = torch.from_numpy(pose_aa[1:].flatten()).float().to(device).unsqueeze(0)
     global_orient = torch.from_numpy(pose_aa[0]).float().to(device).unsqueeze(0)
@@ -1097,6 +1098,8 @@ class PoseStreamer:
         self.device = (
             torch.device("cuda") if use_cuda and torch.cuda.is_available() else torch.device("cpu")
         )
+        if self.device.type == "cpu":
+            prepare_cpu_kinematics()  # Warm model data before the operator enters POSE.
 
         if record_dir:
             os.makedirs(record_dir, exist_ok=True)
