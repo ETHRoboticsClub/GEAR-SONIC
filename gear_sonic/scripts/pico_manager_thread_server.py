@@ -36,6 +36,7 @@ import torch
 import zmq
 
 from gear_sonic.utils.teleop import input_readers
+from gear_sonic.utils.teleop.prediction import ThreePointPredictor
 from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, prepare_cpu_kinematics
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
@@ -1370,10 +1371,13 @@ class PlannerStreamer:
         three_point: ThreePointPose,
         zmq_feedback_host: str = "localhost",
         zmq_feedback_port: int = 5557,
+        three_point_lead_s: float = 0.0,
     ):
         self.socket = socket
         self.reader = reader
         self.three_point = three_point
+        # Extrapolates the VR 3PT targets to offset latency; None sends them as sampled.
+        self.predictor = ThreePointPredictor(three_point_lead_s) if three_point_lead_s > 0 else None
         self.feedback_reader = FeedbackReader(
             zmq_feedback_host=zmq_feedback_host, zmq_feedback_port=zmq_feedback_port
         )
@@ -1410,6 +1414,7 @@ class PlannerStreamer:
         three_point_body = self.reader.get_three_point_body()
         if three_point_body is not None:
             self._check_three_point_source(three_point_body[0])
+        self._reset_prediction()
         self.feedback_reader.poll_feedback()
         if self.feedback_reader.full_body_q_measured is not None:
             self.three_point.reset_with_measured_q(self.feedback_reader.full_body_q_measured)
@@ -1430,6 +1435,7 @@ class PlannerStreamer:
             return
         self.three_point_source, body = three_point_body
         self.three_point.calibrate_now(body)
+        self._reset_prediction()
 
     def _check_three_point_source(self, source: str) -> None:
         """Body and headset inputs differ in pelvis, neck and wrist frames, so a
@@ -1443,6 +1449,12 @@ class PlannerStreamer:
         )
         self.three_point.clear_neck_calibration()
         self.three_point_source = None
+        self._reset_prediction()
+
+    def _reset_prediction(self) -> None:
+        """A new calibration moves the targets: velocities across it are not motion."""
+        if self.predictor is not None:
+            self.predictor.reset()
 
     def _calibrated_three_point_body(self) -> np.ndarray | None:
         """The 3-point input, or None while there is none or no calibration matches it."""
@@ -1534,8 +1546,12 @@ class PlannerStreamer:
             if stream_mode == StreamMode.PLANNER_VR_3PT:
                 # Without a 3-point input the message still carries locomotion.
                 three_point_body = self._calibrated_three_point_body()
-                if three_point_body is not None:
+                if three_point_body is None:
+                    self._reset_prediction()
+                else:
                     vr_3pt_pose = self.three_point.process_smpl_pose(three_point_body)
+                    if self.predictor is not None:
+                        vr_3pt_pose = self.predictor(input_timestamp, vr_3pt_pose)
                     vr_3pt_position = (vr_3pt_pose[:, :3].flatten()).tolist()
                     vr_3pt_orientation = vr_3pt_pose[:, 3:].flatten().tolist()
 
@@ -1968,6 +1984,7 @@ def run_pico_manager(
     with_g1_robot: bool = True,
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
+    three_point_lead_s: float = 0.0,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -2016,6 +2033,7 @@ def run_pico_manager(
         three_point=three_point,
         zmq_feedback_host=zmq_feedback_host,
         zmq_feedback_port=zmq_feedback_port,
+        three_point_lead_s=three_point_lead_s,
     )
 
     # State machine diagram:
@@ -2120,7 +2138,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable SMPL body joint visualization (24 joint spheres) in the VR3pt viewer",
     )
+    parser.add_argument(
+        "--three_point_lead_ms",
+        type=float,
+        default=0.0,
+        help="Extrapolate the VR 3PT targets this far ahead of their sample time to offset "
+        "latency (default 0: sent as sampled); see gear_sonic/utils/teleop/prediction.py",
+    )
     args = parser.parse_args()
+    if not 0.0 <= args.three_point_lead_ms <= 200.0:
+        parser.error("--three_point_lead_ms must be in [0, 200]")
 
     # Standalone VR3Pt test modes (exit after finishing)
     if args.vr3pt_test:
@@ -2148,6 +2175,7 @@ if __name__ == "__main__":
             with_g1_robot=with_g1_robot,
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
+            three_point_lead_s=args.three_point_lead_ms * 1e-3,
         )
     else:
         # Run legacy single-thread pose streaming

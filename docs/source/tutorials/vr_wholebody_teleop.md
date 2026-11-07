@@ -24,6 +24,14 @@ result keeps the same root-relative positions, orientation offsets, float32
 boundaries and calibration as the full-body input path. Unused body joints do
 not enter this conversion. Full-body SMPL resampling is a separate path and is
 not required for headset/controller three-point control.
+
+`--three_point_lead_ms N` (default 0, off) extrapolates the calibrated
+three-point targets N ms past their sample time along each point's velocity
+(least squares over the last 50 ms), to offset transport, control-tick and
+tracking latency. A lead is clamped to 8 cm and 0.35 rad per point, restarts
+after a calibration or a tracking gap, and overshoots by at most that clamp
+when the hand reverses. Validate any lead in simulation first; it is a tuning
+experiment, not a default.
 ```
 
 ```{admonition} Safety Warning
