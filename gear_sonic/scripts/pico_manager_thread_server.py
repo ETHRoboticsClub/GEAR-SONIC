@@ -163,34 +163,36 @@ OFFSETS = [
 ]
 
 
+_KEYPOINT_OFFSETS = sRot.concatenate(OFFSETS)
+
+
 def _compute_rel_transform(pose, world_frame, scalar_first=True):
     """
     Transform a pose from Unity coordinate frame to robot coordinate frame.
 
     Args:
-        pose: np.ndarray shape (7,) - [x, y, z, qx, qy, qz, qw] in Unity frame
+        pose: np.ndarray shape (7,) or (N, 7), Unity positions and quaternions
         world_frame: np.ndarray shape (7,) - reference frame to compute relative transform
         scalar_first: bool - if True, quaternion is [qw, qx, qy, qz]; if False, [qx, qy, qz, qw]
 
     Returns:
-        rel_pos: np.ndarray (3,) - position in robot frame
-        rel_rot: np.ndarray (4,) - quaternion [qw, qx, qy, qz] in robot frame
+        rel_pos: np.ndarray (3,) or (N, 3), position in robot frame
+        rel_rot: np.ndarray (4,) or (N, 4), quaternion [qw, qx, qy, qz]
 
     Coordinate transform matrix Q converts Unity (Y-up, left-handed) to Robot (Z-up, right-handed):
         Unity:  X-right, Y-up, Z-forward
         Robot:  X-forward, Y-left, Z-up
     """
-    world_frame = world_frame.copy()
-
-    # Q transforms Unity coordinates to Robot coordinates
-    # Unity [x, y, z] -> Robot [-x, z, y]
+    # Accept a batch without modifying the tracking reader's sample.
+    pose = np.asarray(pose)
+    world_frame = np.asarray(world_frame)
     Q = np.array([[-1, 0, 0], [0, 0, 1], [0, 1, 0.0]])
-    pose[:3] = Q @ pose[:3]
-    world_frame[:3] = Q @ world_frame[:3]
+    positions = pose[..., :3] @ Q.T
+    world_position = Q @ world_frame[:3]
     rot_base = sRot.from_quat(world_frame[3:], scalar_first=scalar_first).as_matrix()
-    rot = sRot.from_quat(pose[3:], scalar_first=scalar_first).as_matrix()
+    rot = sRot.from_quat(pose[..., 3:], scalar_first=scalar_first).as_matrix()
     rel_rot = sRot.from_matrix(Q @ (rot_base.T @ rot) @ Q.T)
-    rel_pos = sRot.from_matrix(Q @ rot_base.T @ Q.T).apply(pose[:3] - world_frame[:3])
+    rel_pos = sRot.from_matrix(Q @ rot_base.T @ Q.T).apply(positions - world_position)
     return rel_pos, rel_rot.as_quat(scalar_first=True)
 
 
@@ -217,8 +219,8 @@ def _process_3pt_pose(smpl_pose_np):
                      IMPORTANT: Positions and orientations are RELATIVE TO ROOT (pelvis).
 
     Processing Steps:
-        1. Transform all 24 joints from Unity frame to robot frame
-        2. Extract 4 keypoints: Root(0), L-Wrist(22), R-Wrist(23), Neck(12)
+        1. Extract 4 keypoints: Root(0), L-Wrist(22), R-Wrist(23), Neck(12)
+        2. Transform those keypoints from Unity frame to robot frame
         3. Apply per-joint rotation OFFSETS to align joint frames
         4. Make L-Wrist, R-Wrist, Neck relative to Root (both position and orientation)
         5. Return only the 3 non-root keypoints
@@ -228,89 +230,22 @@ def _process_3pt_pose(smpl_pose_np):
           orientations.
     """
 
-    # Defensive copy: _compute_rel_transform modifies pose[:3] in-place, which would
-    # corrupt the caller's array (e.g. the reader's latest sample) and cause wrong results
-    # if the same sample is processed more than once.
-    smpl_pose_np = smpl_pose_np.copy()
+    # Only these four joints contribute. Convert them in one batch rather
+    # than building rotations for all 24 joints. Preserve the float32 boundaries
+    # used by calibration.
+    selected = smpl_pose_np[[0, 22, 23, 12]]
+    positions, orientations = _compute_rel_transform(
+        selected, [0, 0, 0, 0, 0, 0, 1], scalar_first=False
+    )
+    body_poses = np.column_stack([positions, orientations]).astype(np.float32)
 
-    # =========================================================================
-    # STEP 1: Transform all joints from Unity frame to robot frame
-    # =========================================================================
-    # Input: smpl_pose_np[i] = [x, y, z, qx, qy, qz, qw] in Unity frame (scalar-last)
-    # Output: body_poses[i] = [x, y, z, qw, qx, qy, qz] in robot frame (scalar-first)
-    body_poses = np.zeros((smpl_pose_np.shape[0], 7), dtype=np.float32)
-    for i in range(smpl_pose_np.shape[0]):
-        pos, orn = _compute_rel_transform(
-            smpl_pose_np[i], [0, 0, 0, 0, 0, 0, 1], scalar_first=False
-        )
-        body_poses[i, :3] = pos  # Position in robot frame
-        body_poses[i, 3:] = orn  # Quaternion [qw, qx, qy, qz] in robot frame
-
-    # =========================================================================
-    # STEP 2 & 3: Extract 4 keypoints and apply rotation OFFSETS
-    # =========================================================================
-    # We only care about these SMPL joint indices:
-    #   - Joint 0:  Root/Pelvis (reference frame)
-    #   - Joint 22: Left Wrist
-    #   - Joint 23: Right Wrist
-    #   - Joint 12: Neck (more stable than Head joint 15)
-    #
-    # kp_poses maps these to indices 0, 1, 2, 3 respectively
-    positions = np.array([[p[0], p[1], p[2]] for p in body_poses])
-    kp_poses = np.zeros((4, 7), dtype=np.float32)
-
-    for i, pose in enumerate(body_poses):
-        if i not in [0, 22, 23, 12]:
-            continue  # Skip joints we don't care about
-
-        pos = positions[i]
-
-        # Map SMPL joint index to our keypoint index (0-3)
-        # rel_i: 0=Root, 1=L-Wrist, 2=R-Wrist, 3=Neck
-        rel_i = [0, 22, 23, 12].index(i)
-
-        # Extract quaternion and apply rotation offset
-        # pose[3:7] is [qw, qx, qy, qz] (scalar-first from _compute_rel_transform)
-        quat = np.array([pose[3], pose[4], pose[5], pose[6]])
-
-        # Apply offset: new_rotation = original_rotation * OFFSET
-        # This post-multiplies the offset (intrinsic rotation)
-        rot_quat = (sRot.from_quat(quat, scalar_first=True) * OFFSETS[rel_i]).as_quat(
-            scalar_first=False
-        )
-
-        kp_poses[rel_i, 3:] = rot_quat  # Store as scalar-last temporarily for scipy compatibility
-        kp_poses[rel_i, :3] = pos
-
-    # =========================================================================
-    # STEP 4: Make positions and orientations RELATIVE TO ROOT
-    # =========================================================================
-    # This transforms everything into the root's local coordinate frame.
-    # After this step:
-    #   - Root's position would be (0,0,0) and orientation identity (but we don't return root)
-    #   - Other keypoints are expressed relative to root
-    root_pos = kp_poses[0, :3].copy()
-    root_quat = kp_poses[0, 3:].copy()  # Still scalar-last for scipy
-
-    for i in range(1, 4):
-        # Position: subtract root position, then rotate by inverse of root orientation
-        kp_poses[i, :3] = sRot.from_quat(root_quat).inv().apply(kp_poses[i, :3] - root_pos)
-
-        # Orientation: compute relative rotation (root_inv * keypoint_rot)
-        # Result stored as scalar-FIRST [qw, qx, qy, qz]
-        kp_poses[i, 3:] = (
-            sRot.from_quat(root_quat).inv() * sRot.from_quat(kp_poses[i, 3:])
-        ).as_quat(scalar_first=True)
-
-    # =========================================================================
-    # STEP 5: Return only L-Wrist, R-Wrist, Neck (skip Root)
-    # =========================================================================
-    # NOTE: Position and orientation calibration (including neck position via kinematic
-    #       chain) is done in ThreePointPose.apply_calibration() to ensure consistency
-    #       between calibrated orientation and computed neck position.
-    # kp_poses[1:] = indices 1, 2, 3 = L-Wrist, R-Wrist, Neck
-    # Each row: [x, y, z, qw, qx, qy, qz] relative to root, scalar-first quaternion
-    return kp_poses[1:]
+    rotations = sRot.from_quat(body_poses[:, 3:], scalar_first=True) * _KEYPOINT_OFFSETS
+    keypoint_quats = rotations.as_quat().astype(np.float32)
+    root_inverse = sRot.from_quat(keypoint_quats[0]).inv()
+    result = np.empty((3, 7), dtype=np.float32)
+    result[:, :3] = root_inverse.apply(body_poses[1:, :3] - body_poses[0, :3])
+    result[:, 3:] = (root_inverse * sRot.from_quat(keypoint_quats[1:])).as_quat(scalar_first=True)
+    return result
 
 
 # =============================================================================

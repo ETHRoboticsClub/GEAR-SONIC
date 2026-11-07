@@ -16,6 +16,14 @@ mode, including a successful ground pickup.
 ```{admonition} ETHRC fork
 :class: note
 In this fork the streamer reads no headset: it takes the operator's tracking from the ETHRC controls repo's teleop module on its feedback socket. The headset steps below describe upstream's workflow.
+
+Headset and controller tracking without a body tracker uses `PLANNER_VR_3PT`.
+Its pose conversion reads only pelvis, left wrist, right wrist and neck, transforms
+those four keypoints as a batch, and leaves the reader's sample unchanged. The
+result keeps the same root-relative positions, orientation offsets, float32
+boundaries and calibration as the full-body input path. Unused body joints do
+not enter this conversion. Full-body SMPL resampling is a separate path and is
+not required for headset/controller three-point control.
 ```
 
 ```{admonition} Safety Warning
