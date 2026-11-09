@@ -59,6 +59,24 @@ def test_the_lead_is_clamped():
     np.testing.assert_allclose((got * newest.inv()).magnitude(), 0.2, atol=1e-9)
 
 
+@pytest.mark.parametrize("seed", range(3))
+def test_arrival_jitter_does_not_disturb_a_steady_motion(seed):
+    # The headset samples at 90 Hz; the stamps are arrival times, which Wi-Fi
+    # and TCP delay by a few milliseconds each, in order.
+    velocity = np.array([0.4, -0.2, 0.1])
+    predictor = ThreePointPredictor(0.05)
+    rng = np.random.default_rng(seed)
+    arrival_ns, errors = 0, []
+    for i in range(90):
+        sample_ns = 10_000 * MS + i * PERIOD_NS
+        arrival_ns = max(arrival_ns + 1, sample_ns + int(rng.exponential(4 * MS)))
+        t_s = i * PERIOD_NS * 1e-9
+        out = predictor(arrival_ns, _poses(t_s, velocity=velocity))
+        if i >= 10:
+            errors.append(np.abs(out[:, :3] - (BASE + velocity * (t_s + 0.05))).max())
+    assert max(errors) < 0.003  # m; slopes against the stamps erred by 7-41 mm here
+
+
 def test_a_gap_restarts_the_estimate():
     predictor = ThreePointPredictor(0.05)
     _feed(predictor, 10, velocity=np.array([0.5, 0, 0]))
