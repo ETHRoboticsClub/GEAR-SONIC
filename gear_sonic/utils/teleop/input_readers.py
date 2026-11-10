@@ -12,6 +12,11 @@ feedback socket as the topic ``tracking`` followed by msgpack::
      "left_hand" / "right_hand": {"positions": [78], "rotations": [104]} | None,
      "body": {"positions": [72], "rotations": [96]} | None}
 
+The PC-local bridge also sends ``body_update_sequence`` (the SDK's count of body
+packets) and ``device_time_ns`` (``[body, packet]`` timestamps on the headset's
+clock, 0 where the client sends none). With them a body sample is stamped with
+its capture time instead of its arrival time; see ``CaptureClock``.
+
 A device is present only while the module judges it tracked (finite, unit
 quaternions, still changing). Poses are in the module's operator space, REP-103
 (x forward, y left, z up); ``TrackingReader`` converts them to the OpenXR stage
@@ -29,7 +34,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import zmq
 
-from gear_sonic.utils.teleop.tracking_timing import PicoTimingMonitor
+from gear_sonic.utils.teleop.tracking_timing import CaptureClock, PicoTimingMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +194,7 @@ class TrackingReader:
 
     def __init__(
         self, host: str | None = None, port: int | None = None, context=None, clock=time.monotonic_ns,
-        *, local_pico_timing: bool = False,
+        *, local_pico_timing: bool = False, capture_clock: bool = True,
     ):
         self._address = None if host is None else f"tcp://{host}:{port}"
         self._context = context
@@ -210,6 +215,9 @@ class TrackingReader:
         # Opt in only for pico_sim_bridge on this PC: remote monotonic clocks
         # cannot be subtracted to measure transport delay.
         self._timing = PicoTimingMonitor() if local_pico_timing else None
+        # Stamps bodies with their headset capture time when the frame carries
+        # headset timestamps; frames without them keep their arrival time.
+        self._capture_clock = CaptureClock() if capture_clock else None
 
     def warn_if_tracking_delayed(self, enabled: bool = True) -> None:
         with self._lock:
@@ -297,6 +305,22 @@ class TrackingReader:
             return source, data
         return source, synthesize_three_point_body(*data)
 
+    def _body_capture_ns(self, sample_ns: int, device_times: Any) -> int:
+        """The body's capture time on the bridge's clock; ``sample_ns`` (its arrival)
+        when the frame has no usable headset timestamps."""
+        if self._capture_clock is None:
+            return sample_ns
+        if not isinstance(device_times, (list, tuple)):
+            device_times = ()
+        previous = self._capture_clock.source
+        body_ns = self._capture_clock.stamp(
+            sample_ns,
+            [t if isinstance(t, int) and not isinstance(t, bool) else None for t in device_times],
+        )
+        if self._capture_clock.source != previous:
+            logger.info("[TrackingReader] Body time base: %s", self._capture_clock.source)
+        return body_ns
+
     def _update(self, frame: Any, now_ns: int) -> None:
         try:
             sample_ns = int(frame["sample_time_ns"])
@@ -339,15 +363,16 @@ class TrackingReader:
         fresh_body = body_sequence is None or body_sequence != self._last_body_update_sequence
         if body is not None and fresh_body:
             self._last_body_update_sequence = body_sequence
-            dt = 0.0 if self._last_body_ns is None else (sample_ns - self._last_body_ns) * 1e-9
+            body_ns = self._body_capture_ns(sample_ns, frame.get("device_time_ns"))
+            dt = 0.0 if self._last_body_ns is None else (body_ns - self._last_body_ns) * 1e-9
             if dt > 0.0:
                 self._fps_ema = 1.0 / dt if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 / dt
-            self._last_body_ns = sample_ns
+            self._last_body_ns = body_ns
             sample = {
                 "body_poses_np": body,
                 "timestamp_realtime": time.time(),
                 "timestamp_monotonic": now_ns * 1e-9,
-                "timestamp_ns": sample_ns,
+                "timestamp_ns": body_ns,
                 "dt": dt,
                 "fps": self._fps_ema,
             }

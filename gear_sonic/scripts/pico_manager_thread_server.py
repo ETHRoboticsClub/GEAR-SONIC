@@ -453,6 +453,11 @@ class YawAccumulator:
         return self.heading
 
 
+# Parent of each XR_BD body joint; the same tree as SMPL's 24 joints. Only joints
+# 1-21 reach the policy (the hands' own rotations are not part of the SMPL pose).
+SMPL_PARENT_INDICES = [-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21]
+
+
 def compute_from_body_poses(parent_indices: list, device, body_poses_np: np.ndarray):
     """
     Compute local joints and body orientation from provided body_poses_np.
@@ -1105,33 +1110,7 @@ class PoseStreamer:
         self.record_idx = 0
 
         self.left_hand_ik_solver, self.right_hand_ik_solver = init_hand_ik_solvers()
-        self.parent_indices = [
-            -1,
-            0,
-            0,
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            9,
-            9,
-            12,
-            13,
-            14,
-            16,
-            17,
-            18,
-            19,
-            20,
-            22,
-            23,
-        ][:24]
+        self.parent_indices = SMPL_PARENT_INDICES
 
         self.step = 0
         self.last_fps_report = time.time()
@@ -2052,6 +2031,7 @@ def run_pico_manager(
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
     local_pico_timing: bool = False,
+    capture_clock: bool = True,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -2061,7 +2041,8 @@ def run_pico_manager(
     """
     context = zmq.Context()
     reader = input_readers.TrackingReader(
-        zmq_feedback_host, zmq_feedback_port, context, local_pico_timing=local_pico_timing
+        zmq_feedback_host, zmq_feedback_port, context, local_pico_timing=local_pico_timing,
+        capture_clock=capture_clock,
     )
     reader.start()
     socket = context.socket(zmq.PUB)
@@ -2158,6 +2139,11 @@ if __name__ == "__main__":
         help="Warn on body timing >20 ms in manager POSE mode; requires pico_sim_bridge on this PC",
     )
     parser.add_argument(
+        "--arrival_stamps",
+        action="store_true",
+        help="Date body samples by their arrival, ignoring headset timestamps (for comparison)",
+    )
+    parser.add_argument(
         "--cuda", action="store_true", help="Use CUDA for tensors and model (default: CPU)"
     )
     parser.add_argument(
@@ -2230,6 +2216,7 @@ if __name__ == "__main__":
     if args.manager:
         run_pico_manager(
             local_pico_timing=args.local_pico_timing,
+            capture_clock=not args.arrival_stamps,
             port=args.port,
             buffer_size=args.buffer_size,
             num_frames_to_send=args.num_frames_to_send,

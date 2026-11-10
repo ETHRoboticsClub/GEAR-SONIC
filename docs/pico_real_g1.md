@@ -62,6 +62,12 @@ Stop a tracking-only session before running `start`. Logs are stored under
 `.local/pico-real/logs/`. The launcher refuses to start over an existing session,
 running ETHRC containers, or occupied service ports.
 
+## Motion fidelity
+
+If the robot's motion does not match the operator's, see
+[pico_fidelity.md](pico_fidelity.md) for the capture report that separates PICO
+tracking, SMPL mapping and timing.
+
 ## Configuration and validation
 
 - DDS uses `enP8p1s0`, domain 0. CRC and hardware velocity checks stay enabled.

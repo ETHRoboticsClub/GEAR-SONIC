@@ -69,6 +69,8 @@ def test_body_updates_without_vendor_timestamp():
         def get_body_timestamp_ns(self):
             return 0
 
+        get_time_stamp_ns = get_body_timestamp_ns
+
     sdk, fresh = SDK(), FreshPoses()
     frame = sample(sdk, fresh, 0, 0.)
     assert frame["body"] is not None
@@ -86,6 +88,8 @@ def test_stationary_controllers_keep_buttons_until_packets_stop():
         get_input_update_sequences=lambda: updates,
         get_headset_pose=lambda: [0., 1.6, 0., 0., 0., 0., 1.],
         is_body_data_available=lambda: False,
+        get_body_timestamp_ns=lambda: 0,
+        get_time_stamp_ns=lambda: 0,
     )
     for side in ("left", "right"):
         setattr(sdk, f"get_{side}_controller_pose", lambda: [0., 1., 0., 0., 0., 0., 1.])

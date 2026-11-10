@@ -28,6 +28,13 @@
  *   the playback cursor to frame 0.  This prevents unbounded buffering
  *   when the network falls behind.
  *
+ * - **Bridged gap**: A sender that indexes frames by time skips the indices
+ *   of a tracking dropout.  Up to `MAX_BRIDGED_GAP_FRAMES` skipped frames are
+ *   closed up instead: the chunk continues the window, playback carries on
+ *   and the caller keeps its heading alignment.  A catch-up reset re-aligns
+ *   the reference heading with the robot, so resetting on every Wi-Fi stall
+ *   would discard whatever the operator turned during it.
+ *
  * - **Protocol versions**: The merger itself is version-agnostic – it
  *   merges whatever data fields are present in IncomingData.  Protocol-
  *   version validation (rejecting changes mid-session, etc.) is left to
@@ -68,6 +75,9 @@ public:
     static constexpr int HISTORY_FRAMES = 5;
     /// Maximum tolerated gap (in current-rate frames) before a catch-up reset.
     static constexpr int MAX_GAP_FRAMES = 200;
+    /// Longest run of skipped frame indices closed up without a catch-up reset
+    /// (one second at 50 Hz).  A longer dropout restarts the stream.
+    static constexpr int MAX_BRIDGED_GAP_FRAMES = 50;
     
     /// Returned by MergeIncomingData() to communicate what happened.
     struct MergeResult {
@@ -77,6 +87,7 @@ public:
         bool did_catchup_reset = false;           ///< True → caller should reset playback to frame 0.
         int frame_step = 1;                       ///< Detected stride between consecutive frame indices.
         int protocol_version = 0;                 ///< Protocol version of the incoming data (1, 2, or 3).
+        int bridged_gap_frames = 0;               ///< Skipped frames closed up before this chunk (0: none).
     };
     
     /// All the data needed for one merge operation, decoded by the caller.
@@ -115,6 +126,7 @@ public:
         streamed_motion_->name = "streamed";
         streamed_motion_->ReserveCapacity(15000, 29, 1, 1, 0, 0);
         stream_window_start_ = 0;
+        index_bias_ = 0;
     }
     
     // Main merging method: merge incoming data with existing buffered data
@@ -133,8 +145,18 @@ public:
         
         // Extract frame step and validate
         int frame_step = CalculateFrameStep(data.frame_indices);
-        int incoming_frame_start = static_cast<int>(data.frame_indices[0]);
-        int incoming_frame_end = static_cast<int>(data.frame_indices[data.num_frames - 1]);
+        const int raw_frame_start = static_cast<int>(data.frame_indices[0]);
+        // Window positions are frame indices less the gaps closed up so far.
+        int incoming_frame_start = raw_frame_start - index_bias_;
+        int incoming_frame_end = static_cast<int>(data.frame_indices[data.num_frames - 1]) - index_bias_;
+        const int bridged_gap_frames = BridgeableGapFrames(incoming_frame_start, frame_step);
+        if (bridged_gap_frames > 0) {
+            index_bias_ += bridged_gap_frames * frame_step;
+            incoming_frame_start -= bridged_gap_frames * frame_step;
+            incoming_frame_end -= bridged_gap_frames * frame_step;
+            std::cout << "[StreamedMotionMerger] Tracking gap of " << bridged_gap_frames
+                      << " frames closed up; playback and heading alignment continue" << std::endl;
+        }
         
         if constexpr (DEBUG_LOGGING) {
             std::cout << "[StreamedMotionMerger] Processing " << data.num_frames << " frames, "
@@ -159,6 +181,11 @@ public:
             merge_dst_frame,
             did_catchup
         );
+        if (did_catchup) {
+            // A restarted window is positioned by the sender's own indices again.
+            index_bias_ = 0;
+            new_window_start = raw_frame_start;
+        }
         
         // Create new motion sequence
         auto new_motion = CreateNewMotion(data);
@@ -203,6 +230,7 @@ public:
         result.did_catchup_reset = did_catchup;
         result.frame_step = frame_step;
         result.protocol_version = data.protocol_version;
+        result.bridged_gap_frames = did_catchup ? 0 : bridged_gap_frames;
         
         return result;
     }
@@ -210,6 +238,19 @@ public:
 private:
     std::shared_ptr<MotionSequence> streamed_motion_;
     int stream_window_start_ = 0;
+    int index_bias_ = 0;  ///< Frame indices closed up by bridged gaps since the last reset.
+    
+    /// Frames skipped between the window's end and an incoming chunk, when few
+    /// enough to close up; 0 when the chunk is contiguous, overlapping, older,
+    /// or follows a dropout too long to bridge.
+    int BridgeableGapFrames(int incoming_frame_start, int frame_step) const {
+        if (!streamed_motion_ || streamed_motion_->timesteps <= 0 || frame_step <= 0) {
+            return 0;
+        }
+        int stream_window_end = stream_window_start_ + frame_step * (streamed_motion_->timesteps - 1);
+        int skipped = (incoming_frame_start - stream_window_end) / frame_step - 1;
+        return (skipped > 0 && skipped <= MAX_BRIDGED_GAP_FRAMES) ? skipped : 0;
+    }
     
     // Validate incoming data structure
     bool ValidateIncomingData(const IncomingData& data) const {

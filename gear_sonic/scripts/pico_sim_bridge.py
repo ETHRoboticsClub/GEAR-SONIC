@@ -77,12 +77,20 @@ def controller(xrt, side, poses):
     }
 
 
+def device_times(xrt):
+    """Headset-clock stamps of the newest packet, ``[body data, whole packet]``; 0
+    where the client sends none. They let the reader date a body by its capture
+    instead of by its Wi-Fi arrival."""
+    return [int(xrt.get_body_timestamp_ns()), int(xrt.get_time_stamp_ns())]
+
+
 def sample(xrt, fresh, sequence, now, updates=None):
     updates = xrt.get_input_update_sequences() if updates is None else updates
     head = fresh.read("head", [xrt.get_headset_pose()], now, updates["head"])
     frame = {
         "sequence": sequence, "sample_time_ns": time.monotonic_ns(),
         "body_update_sequence": int(updates["body"]),
+        "device_time_ns": device_times(xrt),
         "head": None if head is None else head[0].tolist(),
         "body": None,
     }
