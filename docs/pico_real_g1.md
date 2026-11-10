@@ -15,6 +15,12 @@ bash install_scripts/run_pico_real.sh start
 bash install_scripts/run_pico_real.sh attach
 ```
 
+The `teleop` window shows three labeled terminals: controller in the large left
+pane, tracking bridge and PICO manager on the right. Click a pane or use
+Ctrl+b followed by an arrow key to focus it. Ctrl+b then z zooms the focused pane;
+repeat to restore all three. The XRoboToolkit service has its own `service` window.
+`attach` also rearranges an older session into this layout without restarting it.
+
 `start` launches real motor control: initialization ramps the robot toward its
 default standing pose before the PICO start combination. Have the robot supported
 and ready before running it. Wait for `Init Done`, then stand in the calibration
@@ -23,7 +29,7 @@ Press A+B+X+Y to calibrate and start the policy; A+X toggles full-body POSE mode
 
 ## Abort and stop
 
-In the attached **controller** window, press **o** to request the controller's
+In the attached **controller** pane, press **o** to request the controller's
 stop path. While the policy is active, **A+B+X+Y** also sends a stop request.
 These stop paths send damping commands; damping does not maintain standing balance.
 

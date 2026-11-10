@@ -14,9 +14,47 @@ TMUX=(tmux -L gear-sonic-real)
 LOG_DIR="$ROOT/.local/pico-real/logs"
 SERVICE_DIR=/opt/apps/roboticsservice
 
+component_pane() {
+    "${TMUX[@]}" list-panes -s -t "$SESSION" \
+        -F '#{pane_id} #{?@pico_component,#{@pico_component},#{window_name}}' |
+        awk -v component="$1" '$2 == component {print $1; exit}'
+}
+
 controller_state() {
-    "${TMUX[@]}" list-panes -s -t "$SESSION" -F '#{window_name} #{pane_dead}' |
-        awk '$1 == "controller" {print $2}'
+    local pane
+    pane="$(component_pane controller)"
+    if [[ -n "$pane" ]]; then
+        "${TMUX[@]}" display-message -p -t "$pane" '#{pane_dead}'
+    fi
+}
+
+layout() {
+    local controller pane component
+    controller="$(component_pane controller)"
+    [[ -n "$controller" ]] || return 0
+    # Label panes before moving them; also upgrades existing separate windows.
+    for component in controller bridge manager service; do
+        pane="$(component_pane "$component")"
+        if [[ -n "$pane" ]]; then
+            "${TMUX[@]}" set-option -p -t "$pane" @pico_component "$component"
+        fi
+    done
+    for component in bridge manager; do
+        pane="$(component_pane "$component")"
+        if [[ -n "$pane" ]] &&
+            [[ "$("${TMUX[@]}" display-message -p -t "$pane" '#{window_id}')" != \
+               "$("${TMUX[@]}" display-message -p -t "$controller" '#{window_id}')" ]]; then
+            "${TMUX[@]}" join-pane -d -h -s "$pane" -t "$controller"
+        fi
+    done
+    "${TMUX[@]}" rename-window -t "$controller" teleop
+    "${TMUX[@]}" set-option -w -t "$controller" automatic-rename off
+    "${TMUX[@]}" set-option -w -t "$controller" pane-border-status top
+    "${TMUX[@]}" set-option -w -t "$controller" pane-border-format ' #{@pico_component} '
+    "${TMUX[@]}" set-option -t "$SESSION" mouse on
+    "${TMUX[@]}" select-layout -t "$controller" main-vertical >/dev/null
+    "${TMUX[@]}" select-pane -t "$controller"
+    "${TMUX[@]}" select-window -t "$controller"
 }
 
 check() {
@@ -80,7 +118,7 @@ case "${1:-help}" in
             state="$(controller_state)"
             if [[ "$state" == 0 ]]; then
                 # Use the controller's normal stop path, which publishes damping.
-                "${TMUX[@]}" send-keys -t "$SESSION:controller" o
+                "${TMUX[@]}" send-keys -t "$(component_pane controller)" o
                 for ((attempt=0; attempt<100; attempt++)); do
                     state="$(controller_state)"
                     [[ "$state" != 0 ]] && break
@@ -94,12 +132,13 @@ case "${1:-help}" in
             "${TMUX[@]}" kill-session -t "$SESSION"
         fi
         exit ;;
-    attach) exec "${TMUX[@]}" attach-session -t "$SESSION" ;;
+    layout) layout; exit ;;
+    attach) layout; exec "${TMUX[@]}" attach-session -t "$SESSION" ;;
     status)
-        "${TMUX[@]}" list-panes -s -t "$SESSION" -F '#{window_name}: #{?pane_dead,EXITED,RUNNING} #{pane_dead_status}'
+        "${TMUX[@]}" list-panes -s -t "$SESSION" -F '#{?@pico_component,#{@pico_component},#{window_name}}: #{?pane_dead,EXITED,RUNNING} #{pane_dead_status}'
         exit ;;
     start|tracking) MODE="$1" ;;
-    *) echo "Usage: $0 [check|tracking|start|attach|status|stop|abort]"
+    *) echo "Usage: $0 [check|tracking|start|attach|layout|status|stop|abort]"
        echo 'tracking: service and tracking bridge only; start: includes real robot control'
        exit ;;
 esac
@@ -138,7 +177,7 @@ for window in service "${components[@]}"; do
 done
 trap - ERR
 if [[ "$MODE" == start ]]; then
-    "${TMUX[@]}" select-window -t "$SESSION:controller"
+    layout
     echo "Real robot controller launched. Wait for 'Init Done' before enabling the policy."
 else
     echo 'Tracking only: no robot controller or motor commands.'
