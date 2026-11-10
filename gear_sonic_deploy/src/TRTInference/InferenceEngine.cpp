@@ -9,6 +9,11 @@
 #include <map>
 #include <iostream>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
 
@@ -333,22 +338,34 @@ public:
     {
         Destroy();
 
-        // Read the serialized model from disk
-        std::ifstream file( trtPath, std::ios::binary | std::ios::ate );
-        std::streamsize size = file.tellg();
-        if (size < 0)
+        // Map the serialized engine instead of copying it into a host buffer.
+        // On Jetson, the extra copy competes with GPU allocations for physical RAM.
+        const int fd = open( trtPath.c_str(), O_RDONLY | O_CLOEXEC );
+        if ( fd < 0 )
         {
-            LOG_ERROR("Unable to read engine file!");
+            LOG_ERROR( "Unable to open engine file: " + trtPath );
             return false;
         }
 
-        file.seekg( 0, std::ios::beg );
-        std::vector<char> buffer( size );
-        if ( !file.read( buffer.data(), size ) )
+        constexpr size_t hashSize = 64;
+        struct stat fileInfo {};
+        if ( fstat( fd, &fileInfo ) != 0 || fileInfo.st_size <= static_cast<off_t>( hashSize ) )
         {
-            LOG_ERROR( "Unable to read engine file!" );
+            close( fd );
+            LOG_ERROR( "Unable to read engine file or missing engine payload: " + trtPath );
             return false;
         }
+
+        const size_t size = static_cast<size_t>( fileInfo.st_size );
+        void* mapping = mmap( nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0 );
+        close( fd );
+        if ( mapping == MAP_FAILED )
+        {
+            LOG_ERROR( "Unable to map engine file: " + trtPath );
+            return false;
+        }
+        auto unmap = [size]( void* data ) { munmap( data, size ); };
+        std::unique_ptr<void, decltype(unmap)> buffer( mapping, unmap );
 
         // Create runtime to deserialize the engine file.
         m_runtime = std::unique_ptr<nvinfer1::IRuntime>( nvinfer1::createInferRuntime( s_logger ) );
@@ -369,7 +386,9 @@ public:
 
         // Create an engine, a representation of the optimized model.
         // skip the first 64 bytes when deserializing the engine file as they just contain a hash:
-        m_engine = std::unique_ptr<nvinfer1::ICudaEngine>( m_runtime->deserializeCudaEngine( buffer.data() + 64, buffer.size() - 64 ) );
+        m_engine = std::unique_ptr<nvinfer1::ICudaEngine>( m_runtime->deserializeCudaEngine(
+            static_cast<const char*>( buffer.get() ) + hashSize, size - hashSize ) );
+        buffer.reset();
         if ( !m_engine )
         {
             LOG_ERROR("Unable to create engine.");

@@ -222,3 +222,6 @@ models/
 # Downloaded from HuggingFace (hf download)
 sample_data/
 sonic_release/
+
+# TensorRT caches are built for the target GPU
+*.trt
