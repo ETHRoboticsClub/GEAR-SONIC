@@ -339,6 +339,11 @@ class TrackingReader:
             body = None
             if frame.get("body") is not None:
                 body = _joints(frame["body"], NUM_BODY_JOINTS).astype(np.float32)
+            body_ns = frame.get("body_sample_time_ns")
+            if body_ns is not None and (
+                type(body_ns) is not int or not 0 < body_ns <= sample_ns
+            ):
+                raise ValueError("body_sample_time_ns must be on the provider clock before its poll")
         except (KeyError, TypeError, ValueError, IndexError) as e:
             logger.warning("[TrackingReader] malformed frame dropped (%s)", e)
             return
@@ -363,7 +368,8 @@ class TrackingReader:
         fresh_body = body_sequence is None or body_sequence != self._last_body_update_sequence
         if body is not None and fresh_body:
             self._last_body_update_sequence = body_sequence
-            body_ns = self._body_capture_ns(sample_ns, frame.get("device_time_ns"))
+            if body_ns is None:
+                body_ns = self._body_capture_ns(sample_ns, frame.get("device_time_ns"))
             dt = 0.0 if self._last_body_ns is None else (body_ns - self._last_body_ns) * 1e-9
             if dt > 0.0:
                 self._fps_ema = 1.0 / dt if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 / dt

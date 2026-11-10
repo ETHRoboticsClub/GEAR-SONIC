@@ -135,6 +135,32 @@ def test_reader_keeps_arrival_stamps_for_frames_without_headset_time():
     assert relayed.get_latest()["timestamp_ns"] == arrival[-1] + PERIOD_NS
 
 
+def test_reader_keeps_mapped_body_time_across_controller_updates():
+    reader = TrackingReader(clock=fakes.Clock())
+    frame = body_frame(1_000 * MS, 1)
+    frame["body_sample_time_ns"] = 990 * MS
+    reader._update(frame, 1_001 * MS)
+    assert reader.get_latest()["timestamp_ns"] == 990 * MS
+    # The frame wakes controller consumers, without re-dating the cached body.
+    frame["sample_time_ns"] += 5 * MS
+    reader._update(frame, 1_006 * MS)
+    assert reader.get_latest()["timestamp_ns"] == 990 * MS
+    assert reader.get_input_timestamp_ns() == 1_005 * MS
+    frame["body_update_sequence"] = 2
+    frame["body_sample_time_ns"] = 1_003 * MS
+    reader._update(frame, 1_007 * MS)
+    assert reader.get_latest()["timestamp_ns"] == 1_003 * MS
+
+
+def test_reader_rejects_a_mapped_body_time_outside_the_provider_clock():
+    for invalid in (-1, 1_001 * MS, True, "990000000"):
+        reader = TrackingReader(clock=fakes.Clock())
+        frame = body_frame(1_000 * MS, 1)
+        frame["body_sample_time_ns"] = invalid
+        reader._update(frame, 1_001 * MS)
+        assert reader.get_latest() is None
+
+
 def test_reference_follows_the_motion_instead_of_the_network():
     """A 1.2 Hz reach resampled to 50 Hz: arrival stamps distort its velocity."""
     capture, arrival = jittery_stream(72 * 30, seed=1)

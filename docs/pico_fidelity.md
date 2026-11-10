@@ -57,5 +57,40 @@ never PICO's joint positions. Torso and collar bones can differ by a few degrees
 because the two skeletons have different proportions; `length_pico_over_smpl`
 shows the operator's size relative to that skeleton.
 
-The report has been checked on synthetic bodies of known truth only. It has not
-yet been run on a real capture.
+The report's synthetic checks establish that it detects an injected rotation
+error. Small errors against PICO positions do not establish accuracy against
+the operator: PICO rotations and positions can share the same calibration error.
+Large errors can also reflect different rest-bone axes, body proportions or
+unrepresented hand rotations; they do not alone prove an incorrect joint map.
+
+## Controls and Isaac Lab
+
+The branch also retains Isaac Lab's batched CPU SMPL/three-point conversion and
+optional `--three_point_lead_ms` prediction. Prediction defaults to zero in the
+server. Set `SONIC_THREE_POINT_LEAD_MS=0` in Controls for a spatial-fidelity
+comparison; preserve the configured deployment value in a separate latency run.
+Prediction changes the reference, so improved apparent following is not evidence
+that tracking or transport improved.
+
+Controls forwards `body_update_sequence` and an already mapped
+`body_sample_time_ns` on its tracking socket. The reader consumes the latter on
+the provider's clock, without estimating another offset on the remote host.
+Older recordings without that metadata retain their poll timestamps and cannot
+establish headset capture latency. Rebuild Controls and the WebUI together when
+updating the tracking protobuf contract.
+
+A replay of 300 distinct bodies from the saved November 9 Controls simulation
+session showed median PICO/SMPL forearm-direction differences of 11.6 degrees
+(left) and 25.5 degrees (right); length ratios were about 1.25 and 1.27. These
+are observations from one 43.35-second excerpt, not an isolated cause. Head and
+hand bones also differ substantially; do not automatically apply angular offsets
+from this report to the policy's trained reference.
+
+To isolate the source, record the PICO calibration procedure, operator posture,
+tracker locations, body-scale settings and floor/heading reference. Capture
+static neutral and symmetric poses, then repeated isolated elbow bends, arm
+raises and yaw turns. Compare those same frames at raw PICO, bridge, SMPL,
+retargeted reference and measured simulated-robot boundaries. Examine spatial
+errors after time alignment, and report dropouts separately. A changed calibration
+or mapping needs before/after recordings of the same motions; synthetic checks
+alone cannot validate it.

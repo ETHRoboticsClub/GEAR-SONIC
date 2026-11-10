@@ -82,6 +82,7 @@ def test_streamer_publishes_overlapping_windows_on_the_50_hz_grid():
         assert np.isfinite(f["joint_pos"]).all()
         assert f["prep_timing_ms"].shape == (3,)
         assert 0 <= f["prep_timing_ms"][0] <= f["prep_timing_ms"][1]
+        np.testing.assert_array_equal(np.diff(f["frame_index"]), [1] * 4)
     np.testing.assert_array_equal(windows[0]["frame_index"], [0, 1, 2, 3, 4])
     np.testing.assert_array_equal(windows[1]["frame_index"], [1, 2, 3, 4, 5])
     s.on_mode_exit()

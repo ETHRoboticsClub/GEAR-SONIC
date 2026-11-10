@@ -36,6 +36,8 @@ import torch
 import zmq
 
 from gear_sonic.utils.teleop import input_readers
+from gear_sonic.utils.teleop.prediction import ThreePointPredictor
+from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, prepare_cpu_kinematics
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
 from gear_sonic.trl.utils.torch_transform import (
@@ -162,34 +164,36 @@ OFFSETS = [
 ]
 
 
+_KEYPOINT_OFFSETS = sRot.concatenate(OFFSETS)
+
+
 def _compute_rel_transform(pose, world_frame, scalar_first=True):
     """
     Transform a pose from Unity coordinate frame to robot coordinate frame.
 
     Args:
-        pose: np.ndarray shape (7,) - [x, y, z, qx, qy, qz, qw] in Unity frame
+        pose: np.ndarray shape (7,) or (N, 7), Unity positions and quaternions
         world_frame: np.ndarray shape (7,) - reference frame to compute relative transform
         scalar_first: bool - if True, quaternion is [qw, qx, qy, qz]; if False, [qx, qy, qz, qw]
 
     Returns:
-        rel_pos: np.ndarray (3,) - position in robot frame
-        rel_rot: np.ndarray (4,) - quaternion [qw, qx, qy, qz] in robot frame
+        rel_pos: np.ndarray (3,) or (N, 3), position in robot frame
+        rel_rot: np.ndarray (4,) or (N, 4), quaternion [qw, qx, qy, qz]
 
     Coordinate transform matrix Q converts Unity (Y-up, left-handed) to Robot (Z-up, right-handed):
         Unity:  X-right, Y-up, Z-forward
         Robot:  X-forward, Y-left, Z-up
     """
-    world_frame = world_frame.copy()
-
-    # Q transforms Unity coordinates to Robot coordinates
-    # Unity [x, y, z] -> Robot [-x, z, y]
+    # Accept a batch without modifying the tracking reader's sample.
+    pose = np.asarray(pose)
+    world_frame = np.asarray(world_frame)
     Q = np.array([[-1, 0, 0], [0, 0, 1], [0, 1, 0.0]])
-    pose[:3] = Q @ pose[:3]
-    world_frame[:3] = Q @ world_frame[:3]
+    positions = pose[..., :3] @ Q.T
+    world_position = Q @ world_frame[:3]
     rot_base = sRot.from_quat(world_frame[3:], scalar_first=scalar_first).as_matrix()
-    rot = sRot.from_quat(pose[3:], scalar_first=scalar_first).as_matrix()
+    rot = sRot.from_quat(pose[..., 3:], scalar_first=scalar_first).as_matrix()
     rel_rot = sRot.from_matrix(Q @ (rot_base.T @ rot) @ Q.T)
-    rel_pos = sRot.from_matrix(Q @ rot_base.T @ Q.T).apply(pose[:3] - world_frame[:3])
+    rel_pos = sRot.from_matrix(Q @ rot_base.T @ Q.T).apply(positions - world_position)
     return rel_pos, rel_rot.as_quat(scalar_first=True)
 
 
@@ -216,8 +220,8 @@ def _process_3pt_pose(smpl_pose_np):
                      IMPORTANT: Positions and orientations are RELATIVE TO ROOT (pelvis).
 
     Processing Steps:
-        1. Transform all 24 joints from Unity frame to robot frame
-        2. Extract 4 keypoints: Root(0), L-Wrist(22), R-Wrist(23), Neck(12)
+        1. Extract 4 keypoints: Root(0), L-Wrist(22), R-Wrist(23), Neck(12)
+        2. Transform those keypoints from Unity frame to robot frame
         3. Apply per-joint rotation OFFSETS to align joint frames
         4. Make L-Wrist, R-Wrist, Neck relative to Root (both position and orientation)
         5. Return only the 3 non-root keypoints
@@ -227,91 +231,22 @@ def _process_3pt_pose(smpl_pose_np):
           orientations.
     """
 
-    # Defensive copy: _compute_rel_transform modifies pose[:3] in-place, which would
-    # corrupt the caller's array (e.g. the reader's latest sample) and cause wrong results
-    # if the same sample is processed more than once.
-    smpl_pose_np = smpl_pose_np.copy()
+    # Only these four joints contribute. Convert them in one batch rather
+    # than building rotations for all 24 joints. Preserve the float32 boundaries
+    # used by calibration.
+    selected = smpl_pose_np[[0, 22, 23, 12]]
+    positions, orientations = _compute_rel_transform(
+        selected, [0, 0, 0, 0, 0, 0, 1], scalar_first=False
+    )
+    body_poses = np.column_stack([positions, orientations]).astype(np.float32)
 
-    # =========================================================================
-    # STEP 1: Transform all joints from Unity frame to robot frame
-    # =========================================================================
-    # Input: smpl_pose_np[i] = [x, y, z, qx, qy, qz, qw] in Unity frame (scalar-last)
-    # Output: body_poses[i] = [x, y, z, qw, qx, qy, qz] in robot frame (scalar-first)
-    body_poses = np.zeros((smpl_pose_np.shape[0], 7), dtype=np.float32)
-    # Only these four transforms are consumed below. Computing the other
-    # twenty joints on every tracking update adds avoidable latency.
-    for i in (0, 22, 23, 12):
-        pos, orn = _compute_rel_transform(
-            smpl_pose_np[i], [0, 0, 0, 0, 0, 0, 1], scalar_first=False
-        )
-        body_poses[i, :3] = pos  # Position in robot frame
-        body_poses[i, 3:] = orn  # Quaternion [qw, qx, qy, qz] in robot frame
-
-    # =========================================================================
-    # STEP 2 & 3: Extract 4 keypoints and apply rotation OFFSETS
-    # =========================================================================
-    # We only care about these SMPL joint indices:
-    #   - Joint 0:  Root/Pelvis (reference frame)
-    #   - Joint 22: Left Wrist
-    #   - Joint 23: Right Wrist
-    #   - Joint 12: Neck (more stable than Head joint 15)
-    #
-    # kp_poses maps these to indices 0, 1, 2, 3 respectively
-    positions = np.array([[p[0], p[1], p[2]] for p in body_poses])
-    kp_poses = np.zeros((4, 7), dtype=np.float32)
-
-    for i, pose in enumerate(body_poses):
-        if i not in [0, 22, 23, 12]:
-            continue  # Skip joints we don't care about
-
-        pos = positions[i]
-
-        # Map SMPL joint index to our keypoint index (0-3)
-        # rel_i: 0=Root, 1=L-Wrist, 2=R-Wrist, 3=Neck
-        rel_i = [0, 22, 23, 12].index(i)
-
-        # Extract quaternion and apply rotation offset
-        # pose[3:7] is [qw, qx, qy, qz] (scalar-first from _compute_rel_transform)
-        quat = np.array([pose[3], pose[4], pose[5], pose[6]])
-
-        # Apply offset: new_rotation = original_rotation * OFFSET
-        # This post-multiplies the offset (intrinsic rotation)
-        rot_quat = (sRot.from_quat(quat, scalar_first=True) * OFFSETS[rel_i]).as_quat(
-            scalar_first=False
-        )
-
-        kp_poses[rel_i, 3:] = rot_quat  # Store as scalar-last temporarily for scipy compatibility
-        kp_poses[rel_i, :3] = pos
-
-    # =========================================================================
-    # STEP 4: Make positions and orientations RELATIVE TO ROOT
-    # =========================================================================
-    # This transforms everything into the root's local coordinate frame.
-    # After this step:
-    #   - Root's position would be (0,0,0) and orientation identity (but we don't return root)
-    #   - Other keypoints are expressed relative to root
-    root_pos = kp_poses[0, :3].copy()
-    root_quat = kp_poses[0, 3:].copy()  # Still scalar-last for scipy
-
-    for i in range(1, 4):
-        # Position: subtract root position, then rotate by inverse of root orientation
-        kp_poses[i, :3] = sRot.from_quat(root_quat).inv().apply(kp_poses[i, :3] - root_pos)
-
-        # Orientation: compute relative rotation (root_inv * keypoint_rot)
-        # Result stored as scalar-FIRST [qw, qx, qy, qz]
-        kp_poses[i, 3:] = (
-            sRot.from_quat(root_quat).inv() * sRot.from_quat(kp_poses[i, 3:])
-        ).as_quat(scalar_first=True)
-
-    # =========================================================================
-    # STEP 5: Return only L-Wrist, R-Wrist, Neck (skip Root)
-    # =========================================================================
-    # NOTE: Position and orientation calibration (including neck position via kinematic
-    #       chain) is done in ThreePointPose.apply_calibration() to ensure consistency
-    #       between calibrated orientation and computed neck position.
-    # kp_poses[1:] = indices 1, 2, 3 = L-Wrist, R-Wrist, Neck
-    # Each row: [x, y, z, qw, qx, qy, qz] relative to root, scalar-first quaternion
-    return kp_poses[1:]
+    rotations = sRot.from_quat(body_poses[:, 3:], scalar_first=True) * _KEYPOINT_OFFSETS
+    keypoint_quats = rotations.as_quat().astype(np.float32)
+    root_inverse = sRot.from_quat(keypoint_quats[0]).inv()
+    result = np.empty((3, 7), dtype=np.float32)
+    result[:, :3] = root_inverse.apply(body_poses[1:, :3] - body_poses[0, :3])
+    result[:, 3:] = (root_inverse * sRot.from_quat(keypoint_quats[1:])).as_quat(scalar_first=True)
+    return result
 
 
 # =============================================================================
@@ -360,10 +295,14 @@ def process_smpl_joints(body_pose, global_orient, transl):
     global_orient_new = quaternion_to_angle_axis(global_orient_quat)
 
     # Compute joints and vertices using SMPL model (single forward pass)
-    joints = compute_human_joints(
-        body_pose=body_pose[..., :63],
-        global_orient=global_orient_new,
-    )  # (*, 24, 3)
+    if (body_pose.device.type == "cpu" and not body_pose.requires_grad
+            and not global_orient_new.requires_grad):
+        joints = torch.from_numpy(human_joints_cpu(body_pose, global_orient_new))
+    else:
+        joints = compute_human_joints(
+            body_pose=body_pose[..., :63],
+            global_orient=global_orient_new,
+        )  # (*, 24, 3)
 
     # Apply base rotation removal and compute local joints
     if remove_smpl_base_rot is not None:
@@ -469,15 +408,11 @@ def compute_from_body_poses(parent_indices: list, device, body_poses_np: np.ndar
     global_rots = sRot.from_quat(global_quats, scalar_first=True)
     global_rots = global_rots * sRot.from_euler("y", 180, degrees=True)
 
-    local_rots = []
-    for i in range(24):
-        if parent_indices[i] == -1:
-            local_rots.append(global_rots[i])
-        else:
-            local_rot = global_rots[parent_indices[i]].inv() * global_rots[i]
-            local_rots.append(local_rot)
-
-    pose_aa = np.array([rot.as_rotvec() for rot in local_rots])
+    parents = np.asarray(parent_indices, dtype=np.intp)
+    roots = parents == -1
+    pose_aa = np.empty((24, 3))
+    pose_aa[roots] = global_rots[roots].as_rotvec()
+    pose_aa[~roots] = (global_rots[parents[~roots]].inv() * global_rots[~roots]).as_rotvec()
 
     body_pose = torch.from_numpy(pose_aa[1:].flatten()).float().to(device).unsqueeze(0)
     global_orient = torch.from_numpy(pose_aa[0]).float().to(device).unsqueeze(0)
@@ -1104,6 +1039,8 @@ class PoseStreamer:
         self.device = (
             torch.device("cuda") if use_cuda and torch.cuda.is_available() else torch.device("cpu")
         )
+        if self.device.type == "cpu":
+            prepare_cpu_kinematics()  # Warm model data before the operator enters POSE.
 
         if record_dir:
             os.makedirs(record_dir, exist_ok=True)
@@ -1432,10 +1369,13 @@ class PlannerStreamer:
         three_point: ThreePointPose,
         zmq_feedback_host: str = "localhost",
         zmq_feedback_port: int = 5557,
+        three_point_lead_s: float = 0.0,
     ):
         self.socket = socket
         self.reader = reader
         self.three_point = three_point
+        # Extrapolates the VR 3PT targets to offset latency; None sends them as sampled.
+        self.predictor = ThreePointPredictor(three_point_lead_s) if three_point_lead_s > 0 else None
         self.feedback_reader = FeedbackReader(
             zmq_feedback_host=zmq_feedback_host, zmq_feedback_port=zmq_feedback_port
         )
@@ -1472,6 +1412,7 @@ class PlannerStreamer:
         three_point_body = self.reader.get_three_point_body()
         if three_point_body is not None:
             self._check_three_point_source(three_point_body[0])
+        self._reset_prediction()
         self.feedback_reader.poll_feedback()
         if self.feedback_reader.full_body_q_measured is not None:
             self.three_point.reset_with_measured_q(self.feedback_reader.full_body_q_measured)
@@ -1492,6 +1433,7 @@ class PlannerStreamer:
             return
         self.three_point_source, body = three_point_body
         self.three_point.calibrate_now(body)
+        self._reset_prediction()
 
     def _check_three_point_source(self, source: str) -> None:
         """Body and headset inputs differ in pelvis, neck and wrist frames, so a
@@ -1505,6 +1447,12 @@ class PlannerStreamer:
         )
         self.three_point.clear_neck_calibration()
         self.three_point_source = None
+        self._reset_prediction()
+
+    def _reset_prediction(self) -> None:
+        """A new calibration moves the targets: velocities across it are not motion."""
+        if self.predictor is not None:
+            self.predictor.reset()
 
     def _calibrated_three_point_body(self) -> np.ndarray | None:
         """The 3-point input, or None while there is none or no calibration matches it."""
@@ -1596,8 +1544,12 @@ class PlannerStreamer:
             if stream_mode == StreamMode.PLANNER_VR_3PT:
                 # Without a 3-point input the message still carries locomotion.
                 three_point_body = self._calibrated_three_point_body()
-                if three_point_body is not None:
+                if three_point_body is None:
+                    self._reset_prediction()
+                else:
                     vr_3pt_pose = self.three_point.process_smpl_pose(three_point_body)
+                    if self.predictor is not None:
+                        vr_3pt_pose = self.predictor(input_timestamp, vr_3pt_pose)
                     vr_3pt_position = (vr_3pt_pose[:, :3].flatten()).tolist()
                     vr_3pt_orientation = vr_3pt_pose[:, 3:].flatten().tolist()
 
@@ -2032,6 +1984,7 @@ def run_pico_manager(
     enable_smpl_vis: bool = False,
     local_pico_timing: bool = False,
     capture_clock: bool = True,
+    three_point_lead_s: float = 0.0,
 ):
     """
     Manager: creates shared PUB socket and runs pose/planner streamers based on current mode.
@@ -2083,6 +2036,7 @@ def run_pico_manager(
         three_point=three_point,
         zmq_feedback_host=zmq_feedback_host,
         zmq_feedback_port=zmq_feedback_port,
+        three_point_lead_s=three_point_lead_s,
     )
 
     # State machine diagram:
@@ -2200,7 +2154,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable SMPL body joint visualization (24 joint spheres) in the VR3pt viewer",
     )
+    parser.add_argument(
+        "--three_point_lead_ms",
+        type=float,
+        default=0.0,
+        help="Extrapolate the VR 3PT targets this far ahead of their sample time to offset "
+        "latency (default 0: sent as sampled); see gear_sonic/utils/teleop/prediction.py",
+    )
     args = parser.parse_args()
+    if not 0.0 <= args.three_point_lead_ms <= 200.0:
+        parser.error("--three_point_lead_ms must be in [0, 200]")
 
     # Standalone VR3Pt test modes (exit after finishing)
     if args.vr3pt_test:
@@ -2230,6 +2193,7 @@ if __name__ == "__main__":
             with_g1_robot=with_g1_robot,
             enable_waist_tracking=args.waist_tracking,
             enable_smpl_vis=args.vis_smpl,
+            three_point_lead_s=args.three_point_lead_ms * 1e-3,
         )
     else:
         # Run legacy single-thread pose streaming
