@@ -45,11 +45,23 @@ python gear_sonic/scripts/analyze_pico_fidelity.py report .local/fidelity/run1.m
 ```
 
 Captures from `measure_pico_sim_latency.py` can be reported as well.
+Controls observer captures are also accepted:
+
+```bash
+python gear_sonic/scripts/analyze_pico_fidelity.py report tracking.jsonl --json fidelity.json
+```
+
+A tracking-only file contains no robot target/feedback pairs. Older Controls
+captures also lack device timestamps and body receipt counters: their poll rate
+is not the headset's capture rate, and missing fields do not prove the headset
+sent none. With counters, identities include the backend run so a restart is
+not mistaken for a duplicate body.
 
 | Section | What it compares | Reading |
 | --- | --- | --- |
-| Skeleton agreement | Each bone of the SMPL skeleton sent to the policy against the same bone in PICO's own joint positions | Small errors on every limb bone: the SMPL mapping reproduces what PICO measured, so look at PICO calibration or the policy. One limb bone far above the rest: that joint is mapped wrongly. |
-| Body timing | Arrival gaps of fresh bodies; whether a headset timestamp is present, advancing and running at the PC clock's rate | `arrival_jitter_ms` is what capture stamps remove. `present: false` for both fields means the client sends no timestamp and arrival stamps stay in use. |
+| Skeleton agreement | Each bone of the SMPL skeleton against PICO's joint positions | A discrepancy can reflect mapping, rest axes, proportions or inconsistent source geometry. It does not alone identify a wrong joint. |
+| Bone consistency | PICO lengths and bone directions expressed in the parent joint's frame, before SMPL | Variable lengths cannot be reproduced by one fixed-shape skeleton. Direction changes can also reflect vendor joint-frame conventions. |
+| Body timing | Arrival gaps and the timestamp fields carried by the recording | Receipt counters identify new body messages when available; otherwise only the poll rate is reported. `arrival_jitter_ms` describes timing variation, not absolute sensor latency. |
 | Wrist following | Robot wrist joints against their reference, and the delay that best aligns them | A large error that vanishes at the best delay is lag; one that remains is tracking error. |
 
 The policy receives PICO's joint rotations applied to a standard SMPL skeleton,
@@ -86,6 +98,14 @@ are observations from one 43.35-second excerpt, not an isolated cause. Head and
 hand bones also differ substantially; do not automatically apply angular offsets
 from this report to the policy's trained reference.
 
+Over the longer recording, 29,073 distinct poses show nearly constant
+shoulder-to-elbow lengths, while elbow-to-wrist distances vary: their absolute
+deviation from the median reaches 22.0% (left) and 16.7% (right) at p95. That
+variation exists in the received PICO positions before SMPL. A rotation-only
+mapping onto a fixed-shape SMPL skeleton cannot exactly reproduce it. The joint
+indices match the vendor's 24-role enumeration; this does not establish that
+the operator's calibration or every vendor joint frame is correct.
+
 To isolate the source, record the PICO calibration procedure, operator posture,
 tracker locations, body-scale settings and floor/heading reference. Capture
 static neutral and symmetric poses, then repeated isolated elbow bends, arm
@@ -94,3 +114,25 @@ retargeted reference and measured simulated-robot boundaries. Examine spatial
 errors after time alignment, and report dropouts separately. A changed calibration
 or mapping needs before/after recordings of the same motions; synthetic checks
 alone cannot validate it.
+
+## Headset-client checks
+
+SDK receipt counters establish packet receipt, not independent sensor validity.
+The public XRoboToolkit Unity client can retain an old `Body` value when
+calibration or tracking mode becomes invalid, and does not check the body-read
+return code before serialization. Such repeated bodies can advance transport
+counters. Include this case in a live tracking-loss test; counter freshness
+alone does not rule it out.
+
+The consulted client also scales predicted display time by 1,000 for its
+microsecond recording field before passing it to controller APIs documented to
+take milliseconds. Keep those two units separate when fixing that client.
+These are source findings, not proof that the installed headset APK contains
+the same code or that either issue caused the recorded spatial discrepancy.
+Identify the APK/build, then compile and compare before/after captures before
+using a client correction in teleoperation. No headset update is required by
+the report command itself.
+
+Source references: [client tracking serialization](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/blob/cdc53166b0bf412efae71046c6a225eb5091605f/Assets/Scripts/TrackingData.cs),
+[controller prediction API](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/blob/cdc53166b0bf412efae71046c6a225eb5091605f/PICO%20Unity%20Integration%20SDK/Runtime/Scripts/Features/PXR_Input.cs),
+[body joint enumeration](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/blob/cdc53166b0bf412efae71046c6a225eb5091605f/PICO%20Unity%20Integration%20SDK/Runtime/Scripts/PXR_Plugin.cs).

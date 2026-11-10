@@ -5,15 +5,19 @@
     python gear_sonic/scripts/analyze_pico_fidelity.py report capture.msgpack
 
 Captures from measure_pico_sim_latency.py have the same format and can be reported too.
+Controls' tracking.jsonl observer files can also be reported. Those files do not
+contain standalone robot feedback or the original device-clock fields.
 
 The policy never sees PICO's joint positions. It sees a standard SMPL skeleton
 posed with PICO's joint *rotations*. PICO also reports where it believes each
 joint is, so every frame offers an independent check of that mapping:
 
-  * Skeleton agreement: each bone of the rebuilt SMPL skeleton should point the
-    way the same bone points in PICO's own joint positions. Agreement means the
-    reference is what PICO measured, and remaining infidelity is PICO's tracking
-    or calibration (or the policy). A bone that disagrees is mapped wrongly.
+  * Skeleton agreement: compare PICO positions with the skeleton reconstructed
+    from its rotations. Differences can come from mapping, proportions, rest
+    axes or inconsistencies between the source's positions and rotations.
+  * Bone consistency: check segment lengths and their direction in the parent
+    joint's frame, without SMPL. Variable lengths cannot be reproduced by a
+    fixed-shape skeleton; this check does not establish physical accuracy.
   * Body timing: how unevenly body packets arrive, and whether the headset sends
     a timestamp that lets the manager undo it.
   * Wrist following: how closely and how late the robot's wrist joints follow
@@ -107,6 +111,49 @@ def skeleton_agreement(bodies: list[np.ndarray]) -> dict:
     return {"frames": len(bodies), "bones": bones}
 
 
+def bone_consistency(bodies: list[np.ndarray]) -> dict:
+    """PICO segment geometry before SMPL: length and parent-local direction.
+
+    A rigid segment should have a fixed length and direction in its parent's
+    bone frame. Some vendor joints do not follow that frame convention, so a
+    changing direction alone is not proof of a tracking fault.
+    """
+    from scipy.spatial.transform import Rotation
+
+    from gear_sonic.scripts.pico_manager_thread_server import SMPL_PARENT_INDICES
+
+    bones = {}
+    if not bodies:
+        return {"frames": 0, "bones": bones}
+    poses = np.asarray(bodies, dtype=float)
+    parents = np.asarray(SMPL_PARENT_INDICES[1:])
+    delta = poses[:, 1:, :3] - poses[:, parents, :3]
+    local = Rotation.from_quat(poses[:, parents, 3:].reshape(-1, 4)).inv().apply(
+        delta.reshape(-1, 3)
+    ).reshape(len(poses), NUM_BODY_JOINTS - 1, 3)
+    for index, name in enumerate(BODY_JOINT_NAMES[1:]):
+        lengths = np.linalg.norm(local[:, index], axis=1)
+        valid = np.isfinite(lengths) & (lengths > MIN_BONE_M)
+        if not valid.any():
+            continue
+        lengths = lengths[valid]
+        directions = local[valid, index] / lengths[:, None]
+        centre = np.median(directions, axis=0)
+        norm = np.linalg.norm(centre)
+        direction_error = None
+        if norm > np.finfo(float).eps:
+            cosine = directions @ (centre / norm)
+            direction_error = _percentiles(np.degrees(np.arccos(np.clip(cosine, -1, 1))))
+        median_length = float(np.median(lengths))
+        bones[name] = {
+            "valid_frames": int(valid.sum()),
+            "length_m": _percentiles(lengths),
+            "length_deviation_pct": _percentiles(abs(lengths / median_length - 1) * 100),
+            "parent_local_direction_deviation_deg": direction_error,
+        }
+    return {"frames": len(bodies), "bones": bones}
+
+
 def body_timing(frames: list[dict]) -> dict:
     """Arrival regularity of fresh bodies and what the headset timestamps would undo."""
     fresh, last_sequence = [], None
@@ -117,10 +164,15 @@ def body_timing(frames: list[dict]) -> dict:
         last_sequence = sequence
         fresh.append(frame)
     arrival = np.array([f["sample_time_ns"] for f in fresh], dtype=np.int64)
-    report = {"fresh_bodies": len(fresh)}
+    receipts = bool(fresh) and all(f.get("body_update_sequence") is not None for f in fresh)
+    report = {"body_frames": len(fresh), "body_receipt_counters_present": receipts}
+    if receipts:
+        report["fresh_bodies"] = len(fresh)
     if len(fresh) < 3:
         return report
-    report["rate_hz"] = round((len(fresh) - 1) / ((arrival[-1] - arrival[0]) * 1e-9), 2)
+    span = (arrival[-1] - arrival[0]) * 1e-9
+    rate_key = "rate_hz" if receipts else "poll_rate_hz"
+    report[rate_key] = round((len(fresh) - 1) / span, 2) if span > 0 else None
     report["arrival_gap_ms"] = _percentiles(np.diff(arrival) * 1e-6)
     for index, name in enumerate(("body", "packet")):
         stamps = [(f.get("device_time_ns") or [0, 0])[index] for f in fresh]
@@ -168,6 +220,29 @@ def wrist_following(feedback: list[tuple[float, dict]]) -> dict:
 
 def load(path: Path) -> tuple[list[dict], list[tuple[float, dict]]]:
     """``(tracking frames, [(receive time, g1_debug fields)])`` of a capture."""
+    if path.suffix == ".jsonl":
+        tracking = []
+        with path.open() as source:
+            for line in source:
+                row = json.loads(line)
+                frame = row.get("response", {}).get("frame")
+                if row.get("kind") != "sample" or not frame:
+                    continue
+                joints = frame.get("body", {})
+                if not joints.get("tracked"):
+                    continue
+                body = {"positions": joints["positions_m"], "rotations": joints["rotations"]}
+                converted = {
+                    "sequence": int(frame["sequence"]),
+                    "sample_time_ns": int(frame["sample_time_ns"]), "body": body,
+                }
+                if int(joints.get("update_sequence", 0)):
+                    # Receipt counters restart with the backend run.
+                    converted["body_update_sequence"] = (
+                        int(frame.get("run", 0)), int(joints["update_sequence"])
+                    )
+                tracking.append(converted)
+        return tracking, []
     rows = msgpack.unpackb(path.read_bytes(), raw=False)
     tracking, feedback = [], []
     for received, raw in rows:
@@ -179,12 +254,16 @@ def load(path: Path) -> tuple[list[dict], list[tuple[float, dict]]]:
 
 
 def report(path: Path, max_bodies: int = 2000) -> dict:
+    if max_bodies < 1:
+        raise ValueError("max_bodies must be positive")
     tracking, feedback = load(path)
     bodies = [b for b in map(body_poses, tracking) if b is not None]
-    stride = max(1, len(bodies) // max_bodies)
+    stride = max(1, (len(bodies) + max_bodies - 1) // max_bodies)
     return {
         "capture": str(path),
+        "recorded_body_frames": len(bodies),
         "skeleton_agreement": skeleton_agreement(bodies[::stride]),
+        "bone_consistency": bone_consistency(bodies[::stride]),
         "body_timing": body_timing(tracking),
         "wrist_following": wrist_following(feedback),
     }
@@ -236,8 +315,9 @@ def print_report(result: dict) -> None:
         error = bone["direction_error_deg"]
         print(f"  {name:18s} {error['p50']:8.1f} / {error['p95']:6.1f} / {error['max']:6.1f}"
               f" {bone['length_pico_over_smpl']:18.2f}")  # fmt: skip
-    print("  A limb bone far above the others is posed differently from what PICO measured;")
-    print("  uniformly small errors place the remaining infidelity in PICO or the policy.")
+    print("  Differences can reflect rest axes, proportions, mapping or inconsistent source poses.")
+    print("\nPICO bone consistency (before SMPL)")
+    print(json.dumps(result["bone_consistency"], indent=2))
     print("\nBody timing")
     print(json.dumps(result["body_timing"], indent=2))
     print("\nWrist following (robot vs reference)")

@@ -1,7 +1,9 @@
 """The fidelity report tells a wrong SMPL mapping from faithful tracking, on bodies of known truth."""
 
+import json
 import msgpack
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation
 import torch
 
@@ -56,6 +58,44 @@ def test_wrongly_mapped_joint_is_singled_out():
     assert bones["left_wrist"]["direction_error_deg"]["p50"] > 30  # The forearm it poses.
     for name in ("left_elbow", "right_wrist", "left_knee", "head"):
         assert bones[name]["direction_error_deg"]["max"] < 0.5, name
+
+
+def rigid_forearm(angle_deg, length_m=0.3, orientation_error_deg=0):
+    body = np.zeros((24, 7))
+    body[:, 6] = 1
+    elbow = np.array([0.2, 1.1, -0.4])
+    rotation = Rotation.from_euler("z", angle_deg, degrees=True)
+    body[18, :3] = elbow
+    body[18, 3:] = Rotation.from_euler("z", angle_deg + orientation_error_deg, degrees=True).as_quat()
+    body[20, :3] = elbow + rotation.apply([length_m, 0, 0])
+    return body
+
+
+def test_a_rigid_segment_stays_consistent_while_moving_and_turning():
+    bodies = [rigid_forearm(angle) for angle in range(-90, 91, 10)]
+    result = fidelity.bone_consistency(bodies)["bones"]["left_wrist"]
+    assert result["length_m"]["p50"] == 0.3
+    assert result["length_deviation_pct"]["max"] < 0.001
+    assert result["parent_local_direction_deviation_deg"]["max"] < 0.001
+
+
+def test_variable_segment_length_is_distinguished_from_rotation_disagreement():
+    bodies = [rigid_forearm(angle, length_m=length) for angle, length in
+              zip(range(-90, 91, 10), np.linspace(0.25, 0.35, 19))]
+    result = fidelity.bone_consistency(bodies)["bones"]["left_wrist"]
+    assert result["length_deviation_pct"]["max"] > 16
+    assert result["parent_local_direction_deviation_deg"]["max"] < 0.001
+    bodies = [rigid_forearm(angle, orientation_error_deg=-angle) for angle in range(-90, 91, 10)]
+    result = fidelity.bone_consistency(bodies)["bones"]["left_wrist"]
+    assert result["length_deviation_pct"]["max"] < 0.001
+    assert result["parent_local_direction_deviation_deg"]["p95"] > 80
+
+
+def test_no_direction_is_invented_for_missing_or_collapsed_bones():
+    assert fidelity.bone_consistency([]) == {"frames": 0, "bones": {}}
+    body = np.zeros((24, 7))
+    body[:, 6] = 1
+    assert fidelity.bone_consistency([body])["bones"] == {}
 
 
 def tracking_frame(arrival_ns, sequence, device_time_ns=None, body=None):
@@ -123,3 +163,45 @@ def test_report_reads_a_capture(tmp_path):
     assert result["body_timing"]["fresh_bodies"] == 6
     assert result["wrist_following"] == {"feedback_frames": 0}
     fidelity.print_report(result)
+
+
+def test_controls_jsonl_can_be_reported_without_inventing_device_freshness(tmp_path):
+    body = tracked_body()
+    raw = tracking_frame(1_000 * MS, 1, body=body)["body"]
+    path = tmp_path / "tracking.jsonl"
+    rows = [{"kind": "discovery", "robot": {}}]
+    for i in range(3):
+        rows.append({"kind": "sample", "response": {"frame": {
+            "sequence": str(i + 1), "sample_time_ns": str((1_000 + 20 * i) * MS),
+            "body": {"tracked": True, "positions_m": raw["positions"], "rotations": raw["rotations"]},
+        }}})
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    result = fidelity.report(path)
+    assert result["skeleton_agreement"]["frames"] == 3
+    timing = result["body_timing"]
+    assert not timing["body_receipt_counters_present"]
+    assert "fresh_bodies" not in timing
+    assert "rate_hz" not in timing
+    assert timing["poll_rate_hz"] == 50
+    assert result["wrist_following"] == {"feedback_frames": 0}
+    assert result["recorded_body_frames"] == 3
+    assert fidelity.report(path, max_bodies=2)["skeleton_agreement"]["frames"] == 2
+    with pytest.raises(ValueError, match="max_bodies must be positive"):
+        fidelity.report(path, max_bodies=0)
+
+
+def test_controls_jsonl_receipts_deduplicate_within_each_backend_run(tmp_path):
+    raw = tracking_frame(1_000 * MS, 1, body=tracked_body())["body"]
+    path = tmp_path / "tracking.jsonl"
+    rows = []
+    for i, run in enumerate((1, 1, 2)):
+        rows.append({"kind": "sample", "response": {"frame": {
+            "sequence": str(i + 1), "sample_time_ns": str((1_000 + 20 * i) * MS), "run": run,
+            "body": {"tracked": True, "update_sequence": 1,
+                     "positions_m": raw["positions"], "rotations": raw["rotations"]},
+        }}})
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    tracking, _ = fidelity.load(path)
+    timing = fidelity.body_timing(tracking)
+    assert timing["fresh_bodies"] == 2
+    assert timing["body_receipt_counters_present"]
