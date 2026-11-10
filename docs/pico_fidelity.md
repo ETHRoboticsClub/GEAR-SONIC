@@ -1,12 +1,23 @@
 # PICO teleoperation fidelity
 
 Low-latency teleoperation follows the operator quickly but not always faithfully.
-This page covers two causes fixed in the reference path and a capture report that
+This page covers three causes fixed in the reference path and a capture report that
 separates the remaining ones: PICO tracking and calibration, SMPL mapping, timing.
 It applies to the standalone setups in [pico_real_g1.md](pico_real_g1.md) and
 [pico_sim_this_pc.md](pico_sim_this_pc.md).
 
 ## Fixed in the reference path
+
+**SMPL local joints use the pelvis as their origin.** The FK model's rest pelvis
+has a nonzero offset. Removing only the root rotation turns that fixed offset
+into a heading-dependent translation of the entire reference skeleton. The
+manager now subtracts each frame's pelvis before rotating into the root frame.
+The local pelvis is zero and the local skeleton stays unchanged when only the
+global orientation changes; bone lengths, body rotations and root orientation
+are preserved. Both the CPU and generic torch paths follow this convention.
+Old processed pose recordings retain their original coordinates: regenerate
+them from raw tracking for a corrected comparison. This geometric correction
+does not establish live calibration accuracy or stable unsupported motion.
 
 **Body samples are dated by capture, not by Wi-Fi arrival.** The bridge stamped
 each body with the time its packet reached the PC. Wi-Fi delays packets unevenly

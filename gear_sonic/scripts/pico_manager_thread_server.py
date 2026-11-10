@@ -309,7 +309,8 @@ def process_smpl_joints(body_pose, global_orient, transl):
         global_orient_quat = remove_smpl_base_rot(global_orient_quat, w_last=False)
 
     global_orient_quat_inv = quat_inv(global_orient_quat).unsqueeze(1).repeat(1, joints.shape[1], 1)
-    smpl_joints_local = quat_apply(global_orient_quat_inv, joints)
+    # FK keeps the rest pelvis offset; root-local positions need its origin removed.
+    smpl_joints_local = quat_apply(global_orient_quat_inv, joints - joints[..., :1, :])
     global_orient_mat = quaternion_to_rotation_matrix(global_orient_quat)
     global_orient_6d = global_orient_mat[..., :2].reshape(1, 6)
 
