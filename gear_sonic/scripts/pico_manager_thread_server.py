@@ -37,7 +37,12 @@ import zmq
 
 from gear_sonic.utils.teleop import input_readers
 from gear_sonic.utils.teleop.prediction import ThreePointPredictor
-from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, model_local_joints, prepare_cpu_kinematics
+from gear_sonic.utils.teleop.smpl_cpu import (
+    human_joints_cpu,
+    model_local_joints,
+    pelvis_local_joints_cpu,
+    prepare_cpu_kinematics,
+)
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
 from gear_sonic.trl.utils.torch_transform import (
@@ -964,11 +969,12 @@ def _smpl_wrist_joint_positions(use_pose):
 
 
 class UniformPoseResampler:
-    """Resample fresh tracking onto a fixed grid without replaying a backlog.
+    """Resample fresh SMPL rotations onto a fixed grid without replaying a backlog.
 
     Each output includes a frame index and its PC-monotonic sample time.
     After a delayed update, emit at most the newest packet's worth of frames;
     interpolate only between received samples, never extrapolate into the future.
+    Joint positions are derived from these rotations by the streamer.
     """
 
     def __init__(self, target_fps: int, max_frames: int):
@@ -983,17 +989,17 @@ class UniformPoseResampler:
         self.previous = None
         self.last_index = -1
 
-    def push(self, stamp_ns, pose, joints, quat):
+    def push(self, stamp_ns, pose, quat):
         if self.previous is not None and stamp_ns <= self.previous[0]:
             return []
-        current = (stamp_ns, pose.copy(), joints.copy(), quat.copy())
+        current = (stamp_ns, pose.copy(), quat.copy())
         if self.previous is None:
             self.origin_ns = stamp_ns
             self.previous = current
             self.last_index = 0
             return [(0, stamp_ns, *current[1:])]
 
-        prev_ns, prev_pose, prev_joints, prev_quat = self.previous
+        prev_ns, prev_pose, prev_quat = self.previous
         newest = (stamp_ns - self.origin_ns) // self.step_ns
         first = max(self.last_index + 1, newest - self.max_frames + 1)
         result = []
@@ -1003,7 +1009,6 @@ class UniformPoseResampler:
             result.append((
                 index, target_ns,
                 _interp_pose_axis_angle(prev_pose, pose, alpha).astype(np.float32),
-                ((1.0 - alpha) * prev_joints + alpha * joints).astype(np.float32),
                 _quat_lerp_normalized(prev_quat, quat, alpha).astype(np.float32),
             ))
         self.previous = current
@@ -1101,17 +1106,16 @@ class PoseStreamer:
         smpl_pose_np = (
             latest_data["smpl_pose"].detach().cpu().numpy()[:, :63].reshape(-1, 21, 3)[0]
         ).astype(np.float32)
-        smpl_joints_np = (
-            latest_data["smpl_joints_local"].detach().cpu().numpy()[0].astype(np.float32)
-        )
         body_quat_np = (
             latest_data["global_orient_quat"].detach().cpu().numpy()[0].astype(np.float32)
         )
+        samples = self.resampler.push(curr_stamp_ns, smpl_pose_np, body_quat_np)
+        if not samples:
+            self.smpl_compute_ms.append((time.monotonic_ns() - prepare_start_ns) / 1e6)
+            return
+        sampled_joints = pelvis_local_joints_cpu(np.stack([frame[2] for frame in samples]))
         smpl_compute_ms = (time.monotonic_ns() - prepare_start_ns) / 1e6
         self.smpl_compute_ms.append(smpl_compute_ms)
-        samples = self.resampler.push(curr_stamp_ns, smpl_pose_np, smpl_joints_np, body_quat_np)
-        if not samples:
-            return
 
         left_menu_button, left_trigger, right_trigger, left_grip, right_grip = get_controller_inputs(
             self.reader
@@ -1151,7 +1155,7 @@ class PoseStreamer:
         )
         ##### From @Jiefeng for directly setting the joint position ######
 
-        for index, stamp_ns, use_pose, use_joints, use_body_quat in samples:
+        for (index, stamp_ns, use_pose, use_body_quat), use_joints in zip(samples, sampled_joints, strict=True):
             self.frame_buffer["smpl_pose"].append(use_pose)
             self.frame_buffer["smpl_joints"].append(use_joints)
             self.frame_buffer["body_quat_w"].append(use_body_quat)

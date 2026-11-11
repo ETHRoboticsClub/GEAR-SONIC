@@ -38,14 +38,35 @@ def prepare_cpu_kinematics():
             raise ValueError('SMPL parents must precede children')
         depth[joint] = depth[parents[joint]] + 1
     levels = tuple(np.flatnonzero(depth == level) for level in range(1, depth.max() + 1))
+    _pelvis_local_basis()
     return rest, offsets, parents, levels
 
 
 def human_joints_cpu(body_pose, global_orient):
     """Return float32 (*batch, 24, 3) joints for CPU inference tensors."""
+    return _human_joints_numpy(body_pose.detach().numpy(), global_orient.detach().numpy())
+
+
+@lru_cache(maxsize=1)
+def _pelvis_local_basis():
+    from gear_sonic.isaac_utils.rotations import remove_smpl_base_rot
+
+    unbased = remove_smpl_base_rot(torch.tensor([[1., 0., 0., 0.]]), w_last=False)
+    return Rotation.from_quat(unbased.numpy()[0], scalar_first=True).inv().as_matrix().astype(np.float32)
+
+
+def pelvis_local_joints_cpu(body_pose: np.ndarray) -> np.ndarray:
+    """SMPL (*batch, 21, 3) rotvecs in rad → pelvis-relative, base-removed joints in m."""
+    pose = np.asarray(body_pose, dtype=np.float32)
+    if pose.shape[-2:] != (21, 3) or not np.isfinite(pose).all():
+        raise ValueError('Expected finite SMPL body rotations with shape (*batch, 21, 3)')
+    batch = pose.shape[:-2]
+    joints = _human_joints_numpy(pose.reshape(*batch, 63), np.zeros((*batch, 3), np.float32))
+    return (joints - joints[..., :1, :]) @ _pelvis_local_basis().T
+
+
+def _human_joints_numpy(body: np.ndarray, root: np.ndarray) -> np.ndarray:
     rest, offsets, parents, levels = prepare_cpu_kinematics()
-    body = body_pose.detach().numpy()
-    root = global_orient.detach().numpy()
     batch = body.shape[:-1]
     full_pose = np.zeros((*batch, 55, 3), dtype=np.float32)
     full_pose[..., 0, :] = root

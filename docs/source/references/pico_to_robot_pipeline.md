@@ -188,14 +188,20 @@ are separate acquisition, transport, resampling and control clocks.
 | Standalone C++ motor writer | 500 Hz, republishing the latest command between policy ticks |
 
 `PoseStreamer.run_once()` compares sample timestamps, converts global body
-rotations to local SMPL rotations, and interpolates between the previous and
-current sample at a target timestamp. Positions use linear interpolation,
-rotations use the script's rotation interpolation helpers. It advances the
-target timestamp by `1 / target_fps` and skips duplicate input timestamps.
-It emits at most one resampled frame per invocation; it cannot guarantee 50
-fresh frames/s when input or processing is slower, and gaps can skip target
-times. Actual arrival cadence and reference spacing must therefore be
-distinguished from the configured target.
+rotations to local SMPL rotations, and interpolates body and root rotations
+between received samples on the uniform `1 / target_fps` grid. It derives each
+frame's joint positions from that frame's interpolated body rotations with
+batched CPU forward kinematics. Interpolating the positions separately would
+shorten rotating bones and contradict the SMPL pose in the same packet.
+The geometry remains pelvis-relative internally; the wire adapter restores
+the trained encoder's FK origin when publishing.
+
+Duplicate timestamps are skipped. A delayed update emits at most the newest
+packet's worth of grid points (five by default), without extrapolating beyond
+the newest input. Older missing points are skipped rather than replayed as a
+backlog. Actual arrival cadence and reference spacing remain distinct from
+the configured target. `prep_timing_ms` includes interpolation and the derived
+joint calculation in its SMPL compute duration.
 
 The five-frame packet is a sliding window, not five newly acquired frames on
 every send. The first send waits for that window to fill. The encoder's
@@ -207,8 +213,9 @@ frame if a requested index exceeds the available motion. These windows add
 buffering behavior; neither the 20 ms policy period nor the five-frame packet
 size is a measurement of end-to-end latency.
 
-The low-latency checkpoint uses a different SMPL lookahead. Use its matching
-observation configuration rather than assuming all releases use ten frames.
+The low-latency checkpoint uses four frames and the runtime selects the latest
+complete window. Use its matching observation configuration rather than
+assuming all releases use ten frames.
 
 `pico_fps` in a pose packet is computed from the body-sample timestamps seen by
 `TrackingReader`. In the ETHRC XRT route those originate from the backend's

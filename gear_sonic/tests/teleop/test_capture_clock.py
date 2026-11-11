@@ -162,10 +162,10 @@ def test_reader_rejects_a_mapped_body_time_outside_the_provider_clock():
 
 
 def test_reference_follows_the_motion_instead_of_the_network():
-    """A 1.2 Hz reach resampled to 50 Hz: arrival stamps distort its velocity."""
+    """A 1.2 Hz joint turn resampled to 50 Hz: arrival stamps distort its velocity."""
     capture, arrival = jittery_stream(72 * 30, seed=1)
 
-    def hand(t_ns):
+    def angle(t_ns):
         return 0.35 * np.sin(2 * np.pi * 1.2 * np.asarray(t_ns) * 1e-9)
 
     clock = CaptureClock()
@@ -176,12 +176,12 @@ def test_reference_follows_the_motion_instead_of_the_network():
         pose, quat = np.zeros((21, 3), np.float32), np.array([0, 0, 0, 1], np.float32)
         frames = []
         for stamp, c in zip(stamps[72 * 4 :], capture[72 * 4 :]):
-            joints = np.full((24, 3), hand(c), dtype=np.float64)
-            frames += [(f[1], f[3][0, 0]) for f in resampler.push(int(stamp), pose, joints, quat)]
-        times, positions = np.array(frames).T
-        truth = hand(times - np.median(np.asarray(stamps) - capture))
-        return np.sqrt(np.mean((np.diff(positions) - np.diff(truth)) ** 2)) / 0.02
+            pose[0, 0] = angle(c)
+            frames += [(f[1], f[2][0, 0]) for f in resampler.push(int(stamp), pose, quat)]
+        times, angles = np.array(frames).T
+        truth = angle(times - np.median(np.asarray(stamps) - capture))
+        return np.sqrt(np.mean((np.diff(angles) - np.diff(truth)) ** 2)) / 0.02
 
     by_arrival, by_capture = velocity_error(arrival), velocity_error(captured)
-    assert by_arrival > 0.15  # m/s RMS on a motion peaking at 2.6 m/s.
+    assert by_arrival > 0.15  # rad/s RMS on a motion peaking at 2.6 rad/s.
     assert by_capture < 0.1 * by_arrival

@@ -4,7 +4,7 @@ import torch
 
 from gear_sonic.scripts import pico_manager_thread_server as server
 from gear_sonic.trl.utils.torch_transform import compute_human_joints
-from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, model_local_joints
+from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, model_local_joints, pelvis_local_joints_cpu
 
 
 def test_encoder_coordinates_retain_the_training_fk_origin():
@@ -39,6 +39,26 @@ def test_gradient_callers_keep_the_generic_torch_path():
     result['joints'].sum().backward()
     assert body.grad is not None and torch.isfinite(body.grad).all()
     assert root.grad is not None and torch.isfinite(root.grad).all()
+
+
+@pytest.mark.parametrize('batch', [(), (7,), (2, 3)])
+def test_rotation_only_local_fk_matches_generic_fk(batch):
+    pose = np.random.default_rng(7).uniform(-1., 1., (*batch, 21, 3)).astype(np.float32)
+    actual = pelvis_local_joints_cpu(pose)
+    world = compute_human_joints(
+        torch.from_numpy(pose.reshape(-1, 63)), torch.zeros((pose.reshape(-1, 63).shape[0], 3)),
+    ).numpy().reshape(*batch, 24, 3)
+    # The SMPL base's 120-degree rotation about [1,1,1] maps (x,y,z) to (z,x,y).
+    expected = (world - world[..., :1, :])[..., [2, 0, 1]]
+    assert actual.dtype == np.float32
+    np.testing.assert_array_equal(actual[..., 0, :], 0.)
+    np.testing.assert_allclose(actual, expected, atol=3e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize('pose', [np.zeros((21, 4)), np.full((21, 3), np.nan), np.full((21, 3), np.inf)])
+def test_rotation_only_local_fk_refuses_invalid_body_rotations(pose):
+    with pytest.raises(ValueError, match='finite SMPL body rotations'):
+        pelvis_local_joints_cpu(pose)
 
 
 @pytest.mark.parametrize('gradient', [False, True])
