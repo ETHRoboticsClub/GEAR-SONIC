@@ -15,6 +15,13 @@ _JOINTS_PATH = Path(__file__).resolve().parents[2] / 'data/human/human_joints_in
 _OUTPUT = np.r_[np.arange(22), 39, 54]
 
 
+def model_local_joints(pelvis_local_joints, root_quats_wxyz):
+    """SONIC encoder coordinates, including the training FK's fixed rest origin."""
+    origin = prepare_cpu_kinematics()[0][0]
+    offset = Rotation.from_quat(root_quats_wxyz, scalar_first=True).inv().apply(origin)
+    return (pelvis_local_joints + offset[..., None, :]).astype(np.float32)
+
+
 @lru_cache(maxsize=1)
 def prepare_cpu_kinematics():
     # This is the same trusted local model asset loaded by the torch path.

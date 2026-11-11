@@ -37,7 +37,7 @@ import zmq
 
 from gear_sonic.utils.teleop import input_readers
 from gear_sonic.utils.teleop.prediction import ThreePointPredictor
-from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, prepare_cpu_kinematics
+from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, model_local_joints, prepare_cpu_kinematics
 from gear_sonic.utils.teleop.zmq.zmq_poller import ZMQPoller
 from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
 from gear_sonic.trl.utils.torch_transform import (
@@ -1040,8 +1040,7 @@ class PoseStreamer:
         self.device = (
             torch.device("cuda") if use_cuda and torch.cuda.is_available() else torch.device("cpu")
         )
-        if self.device.type == "cpu":
-            prepare_cpu_kinematics()  # Warm model data before the operator enters POSE.
+        prepare_cpu_kinematics()  # Warm FK data and the model's origin before entering POSE.
 
         if record_dir:
             os.makedirs(record_dir, exist_ok=True)
@@ -1181,7 +1180,10 @@ class PoseStreamer:
         if buffer_is_full and not self.buffer_cleared:
             numpy_data = {
                 "smpl_pose": np.stack((self.frame_buffer["smpl_pose"]), axis=0),
-                "smpl_joints": np.stack((self.frame_buffer["smpl_joints"]), axis=0),
+                "smpl_joints": model_local_joints(
+                    np.stack(self.frame_buffer["smpl_joints"]),
+                    np.stack(self.frame_buffer["body_quat_w"]),
+                ),
                 "body_quat_w": np.stack((self.frame_buffer["body_quat_w"]), axis=0),
                 "joint_pos": np.stack((self.frame_buffer["joint_pos"]), axis=0),
                 "joint_vel": np.zeros((N, 29)),

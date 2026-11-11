@@ -8,16 +8,27 @@ It applies to the standalone setups in [pico_real_g1.md](pico_real_g1.md) and
 
 ## Fixed in the reference path
 
-**SMPL local joints use the pelvis as their origin.** The FK model's rest pelvis
+**Geometric SMPL local joints use the pelvis as their origin.** The FK model's rest pelvis
 has a nonzero offset. Removing only the root rotation turns that fixed offset
 into a heading-dependent translation of the entire reference skeleton. The
 manager now subtracts each frame's pelvis before rotating into the root frame.
 The local pelvis is zero and the local skeleton stays unchanged when only the
 global orientation changes; bone lengths, body rotations and root orientation
 are preserved. Both the CPU and generic torch paths follow this convention.
-Old processed pose recordings retain their original coordinates: regenerate
-them from raw tracking for a corrected comparison. This geometric correction
-does not establish live calibration accuracy or stable unsupported motion.
+
+The pretrained encoder has a different origin convention: its training
+observations rotate the FK joints without subtracting the rest pelvis. The v3
+publisher therefore adds `inverse(root_orientation) * J[0]` at the model boundary,
+after geometric resampling. The standalone C++ consumer receives its trained
+coordinates. Controls normalizes the wire joints to the pelvis at API entry and
+restores the model origin at observation assembly, using `smpl_fk_origin_m` from
+the locked bundle. Do not feed centered joints directly to an unchanged encoder.
+The origin comes from `gear_sonic/data/human/human_joints_info.pkl`, not a fitted
+calibration offset. The released NVIDIA motion sample at the pinned model
+revision independently confirms this convention. Processed recordings retain
+their original wire coordinates; report that convention when comparing them.
+These geometric and model-compatibility checks do not establish live calibration
+accuracy or stable unsupported motion.
 
 **Body samples are dated by capture, not by Wi-Fi arrival.** The bridge stamped
 each body with the time its packet reached the PC. Wi-Fi delays packets unevenly

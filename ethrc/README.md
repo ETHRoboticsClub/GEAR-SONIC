@@ -21,3 +21,11 @@ python ethrc/g1_sonic_bundle.py --urdf-sha256 <G1 model identity> --check
 
 The model identity comes from the controls repo's G1 description; regenerate
 when it changes.
+
+`smpl_fk_origin_m` is generated from the rest pelvis `J[0]` in the versioned
+`human_joints_info.pkl` asset; the generated header records its SHA-256. It is
+the training FK origin in metres, before inverse root rotation. Controls API
+poses are pelvis-relative, so its observation adapter restores this origin for
+each frame. Both release variants require the field. Update Controls' manifest
+revision and digest locks together with the consumer and reinstall the bundles;
+older installed manifests are rejected with a reinstall diagnostic.

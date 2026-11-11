@@ -80,6 +80,11 @@ def test_streamer_publishes_overlapping_windows_on_the_50_hz_grid():
         np.testing.assert_array_equal(np.diff(f["frame_timestamp_ns"]), [20 * MS] * 4)
         assert f["smpl_pose"].shape == (5, 21, 3)
         assert np.isfinite(f["joint_pos"]).all()
+        # The wire feeds SONIC's trained encoder, not the geometric pelvis-local API.
+        expected_origin_length = np.linalg.norm(server.prepare_cpu_kinematics()[0][0])
+        np.testing.assert_allclose(
+            np.linalg.norm(f['smpl_joints'][:, 0], axis=1), expected_origin_length, atol=2e-6,
+        )
         assert f["prep_timing_ms"].shape == (3,)
         assert 0 <= f["prep_timing_ms"][0] <= f["prep_timing_ms"][1]
         np.testing.assert_array_equal(np.diff(f["frame_index"]), [1] * 4)

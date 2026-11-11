@@ -4,7 +4,21 @@ import torch
 
 from gear_sonic.scripts import pico_manager_thread_server as server
 from gear_sonic.trl.utils.torch_transform import compute_human_joints
-from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu
+from gear_sonic.utils.teleop.smpl_cpu import human_joints_cpu, model_local_joints
+
+
+def test_encoder_coordinates_retain_the_training_fk_origin():
+    body = torch.full((1, 69), .1)
+    for root in ([0., 0., 0.], [.3, -.2, .7], [-1., .8, .2]):
+        result = server.process_smpl_joints(body, torch.tensor([root]), torch.zeros((1, 3)))
+        expected = server.quat_apply(
+            server.quat_inv(result['global_orient_quat'])[:, None].repeat(1, 24, 1),
+            result['joints'],
+        ).numpy()
+        local = result['smpl_joints_local'].numpy()
+        actual = model_local_joints(local, result['global_orient_quat'].numpy())
+        np.testing.assert_allclose(actual, expected, atol=2e-6)
+        np.testing.assert_array_equal(local[:, 0], 0.)
 
 
 @pytest.mark.parametrize('scale', [0., 1e-7, .2, 3.14])
