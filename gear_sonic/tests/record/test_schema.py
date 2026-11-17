@@ -1,5 +1,7 @@
 """Contract tests for the frozen G1 recording schema. No hardware and no lerobot."""
 
+from pathlib import Path
+import subprocess
 import sys
 
 from gear_sonic.data.record.schema import (
@@ -28,14 +30,26 @@ from gear_sonic.data.record.schema import (
 
 
 def test_schema_imports_without_lerobot():
-    assert "lerobot" not in sys.modules
-    import gear_sonic.data.record.schema as schema
-
-    assert "lerobot" not in sys.modules
-    assert schema.FPS == 50
-    assert "CALLS" in (schema.__doc__ or "")
-    assert 'zmq_sources.subscribe_state(host="127.0.0.1", port=5557)' in schema.__doc__
-    assert "convert.segment_invalid(rows_valid_mask, *, min_segment_frames)" in schema.__doc__
+    # A fresh interpreter: other tests in this process import LeRobot.
+    root = Path(__file__).resolve().parents[3]
+    script = """
+import sys
+assert "lerobot" not in sys.modules
+import gear_sonic.data.record.schema as schema
+assert "lerobot" not in sys.modules
+assert schema.FPS == 50
+assert "CALLS" in (schema.__doc__ or "")
+assert 'zmq_sources.subscribe_state(host="127.0.0.1", port=5557)' in schema.__doc__
+assert "convert.segment_invalid(rows_valid_mask, *, min_segment_frames)" in schema.__doc__
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_pico_names_length_and_key_names():
