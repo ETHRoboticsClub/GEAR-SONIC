@@ -113,13 +113,18 @@ def capture_streams(writer, state_iter, tracking_iter, frames, stop) -> None:
         raise errors[0]
 
 
-def run_until(writer, stop: threading.Event) -> None:
+def run_until(writer, stop: threading.Event, episode_state: dict | None = None) -> None:
     """Print ``health()`` every second and toggle episodes from Enter.
 
     A blank line starts an episode, or stops the open one. After a stop, ``y``
     or ``n`` sets ``success`` on that ``episode_stop`` event. EOF sets ``stop``.
+    ``episode_state["open"]`` stays true until a stop event is queued, so the
+    caller can close an interrupted episode.
     """
+    if episode_state is None:
+        episode_state = {}
     episode_open = False
+    episode_state["open"] = False
     next_health = 0.0
     while not stop.is_set():
         now = time.monotonic()
@@ -140,12 +145,14 @@ def run_until(writer, stop: threading.Event) -> None:
             stamp_ns = time.monotonic_ns()
             writer.mark_event("episode_start", stamp_ns)
             episode_open = True
+            episode_state["open"] = True
             print(f"episode_start {stamp_ns}", flush=True)
             continue
         stamp_ns = time.monotonic_ns()
         success = _read_success()
         writer.mark_event("episode_stop", stamp_ns, {"success": success})
         episode_open = False
+        episode_state["open"] = False
         print(f"episode_stop {stamp_ns} success={success}", flush=True)
 
 
@@ -205,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     stop = threading.Event()
     writer = SessionWriter(root, queue_size=8)
     worker = None
+    episode_state: dict = {"open": False}
     try:
         settings = {
             "host": args.host,
@@ -238,13 +246,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         worker.start()
         try:
-            run_until(writer, stop)
+            run_until(writer, stop, episode_state)
         except KeyboardInterrupt:
             stop.set()
     finally:
         stop.set()
         if worker is not None:
             worker.join(timeout=1.0)
+        if episode_state.get("open"):
+            writer.mark_event(
+                "episode_stop",
+                time.monotonic_ns(),
+                {"success": None, "reason": "interrupted"},
+            )
+            episode_state["open"] = False
         writer.close()
     return 0
 

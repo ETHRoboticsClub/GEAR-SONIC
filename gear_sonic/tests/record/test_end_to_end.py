@@ -26,7 +26,7 @@ from gear_sonic.data.record.build import build_rows
 from gear_sonic.data.record.convert.segment import convert_dataset, segment_invalid
 from gear_sonic.data.record.schema import CAMERA_STALE, REPO_ID, load_layout
 from gear_sonic.data.record.session_log import SessionReader, SessionWriter
-from gear_sonic.scripts.build_episodes import assemble_episode, build_episodes
+from gear_sonic.scripts.build_episodes import assemble_episode, build_episodes, episode_windows
 from gear_sonic.scripts.run_pico_session_recorder import capture_streams, write_session_json
 
 _RESERVED_PORTS = (5556, 5557, 5558, 60061)
@@ -554,6 +554,14 @@ def _valid_and_stale(episode: Path) -> tuple[list[int], list[int]]:
         return valid_flags, stale_at
     finally:
         del dataset
+
+
+def test_an_interrupted_episode_is_closed_at_the_last_stamp():
+    windows = episode_windows(
+        [{"name": "episode_start", "stamp_ns": 10}],
+        end_ns=40,
+    )
+    assert windows == [{"start_ns": 10, "stop_ns": 40, "success": None}]
 
 
 def _fingerprint(root: Path) -> list[tuple[str, str]]:

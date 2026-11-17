@@ -145,6 +145,19 @@ def test_disk_free_below_2gib_raises_before_thread(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_disk_error_is_raised_on_close(tmp_path):
+    writer = SessionWriter(tmp_path, disk_free_bytes=lambda: 10 * _GIB)
+
+    def fail(_item):
+        raise OSError("disk full")
+
+    writer._persist = fail
+    writer.append_state(1, 2, b"payload")
+    with pytest.raises(RuntimeError, match="session log writer failed"):
+        writer.close()
+    assert writer.health()["writer_error"]
+
+
 def test_disk_warning_between_2_and_5_gib(tmp_path):
     with SessionWriter(tmp_path / "edge", disk_free_bytes=lambda: 2 * _GIB) as writer:
         assert writer.health()["disk_warning"] is True

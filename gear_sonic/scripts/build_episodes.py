@@ -31,12 +31,14 @@ from gear_sonic.data.record.writer import write_episode
 from gear_sonic.data.record.zmq_sources import decode_g1_debug, decode_tracking
 
 
-def episode_windows(events) -> list[dict]:
+def episode_windows(events, *, end_ns: int | None = None) -> list[dict]:
     """Pair each ``episode_stop`` with the preceding ``episode_start``.
 
     ``success`` is taken from the stop event when that event carries it
     (``mark_event(..., extra={"success": bool})`` stores the field on the
-    event itself). A stop with no start is ignored.
+    event itself). A stop with no start is ignored. A start that is still
+    open at the end of the log is closed at ``end_ns`` with ``success``
+    None, so an interrupted recording is still built.
     """
     windows: list[dict] = []
     pending = None
@@ -56,6 +58,11 @@ def episode_windows(events) -> list[dict]:
         if stop_ns < start_ns:
             continue
         windows.append({"start_ns": start_ns, "stop_ns": stop_ns, "success": success})
+    if pending is not None and end_ns is not None:
+        start_ns = int(pending["stamp_ns"])
+        stop_ns = int(end_ns)
+        if stop_ns >= start_ns:
+            windows.append({"start_ns": start_ns, "stop_ns": stop_ns, "success": None})
     return windows
 
 
@@ -104,6 +111,17 @@ def assemble_episode(session_dir, start_ns: int, stop_ns: int, *, height: int, w
     }
 
 
+def _last_stamp(reader: SessionReader) -> int | None:
+    """Latest stamp in the session, so an interrupted episode still has an end."""
+    stamps: list[int] = []
+    stamps.extend(stamp for stamp, _recv, _payload in reader.iter_state())
+    stamps.extend(stamp for stamp, _recv, _payload in reader.iter_tracking())
+    stamps.extend(stamp for stamp, _sequence, _blob, _error in reader.iter_jpeg())
+    if not stamps:
+        return None
+    return max(stamps)
+
+
 def build_episodes(
     session_dir,
     out_dir,
@@ -138,7 +156,7 @@ def build_episodes(
     out_dir.mkdir(parents=True, exist_ok=True)
     layout = load_layout()
     reader = SessionReader(session_dir)
-    windows = episode_windows(reader.iter_events())
+    windows = episode_windows(reader.iter_events(), end_ns=_last_stamp(reader))
     written_rows: list[dict] = []
     next_index = _next_episode_index(out_dir)
 

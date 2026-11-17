@@ -92,6 +92,7 @@ class SessionWriter:
         self._ready: queue.Queue[str | None] = queue.Queue()
         self._appended = {name: 0 for name in _STREAMS}
         self._dropped = {name: 0 for name in _STREAMS}
+        self._error: BaseException | None = None
         self._state_file = None
         self._tracking_file = None
         self._mjpeg_file = None
@@ -145,16 +146,23 @@ class SessionWriter:
                 "dropped": dict(self._dropped),
                 "queue_depth": {name: self._queues[name].qsize() for name in _STREAMS},
                 "disk_warning": self._disk_warning,
+                "writer_error": None if self._error is None else str(self._error),
             }
 
     def close(self) -> None:
-        """Flush queued records, join the writer thread, and close the files."""
+        """Flush queued records, join the writer thread, and close the files.
+
+        A disk error on the writer thread is raised here. Records accepted
+        onto a queue before that error are not silently reported as saved.
+        """
         with self._lock:
             already = self._closed
             self._closed = True
             if not already:
                 self._ready.put(None)
         self._thread.join()
+        if self._error is not None:
+            raise RuntimeError("session log writer failed") from self._error
 
     def __enter__(self) -> SessionWriter:
         return self
@@ -213,6 +221,8 @@ class SessionWriter:
                     return
                 item = self._queues[token].get_nowait()
                 self._persist(item)
+        except Exception as exc:
+            self._error = exc
         finally:
             self._close_files()
 
