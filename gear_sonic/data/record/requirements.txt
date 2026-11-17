@@ -1,4 +1,5 @@
 lerobot[dataset]==0.6.1
+huggingface_hub==1.33.0
 pyzmq==27.3.0
 msgpack==1.2.4
 numpy==2.2.6

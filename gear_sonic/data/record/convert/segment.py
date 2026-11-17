@@ -8,7 +8,7 @@ a second copy.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import inspect
 import json
@@ -113,6 +113,7 @@ def write_segmented_dataset(
     min_segment_frames: int | None = None,
     source_frames: Mapping | None = None,
     repo_id: str | None = None,
+    episodes: Iterable[int] | None = None,
 ) -> list[dict]:
     """Write a new LeRobot v3 dataset containing only the kept valid runs.
 
@@ -125,6 +126,10 @@ def write_segmented_dataset(
     key to such a sequence. It is used when the caller already has the pixels.
     The CLI does not pass it: frames are decoded with PyAV from the mp4.
     torchcodec does not load on this board, so it is never selected.
+
+    ``episodes`` selects accumulated v3 episode indices. ``None`` keeps every
+    episode. ``source_episode`` in each returned record is that v3 index, not
+    the new episode index inside ``out_root``.
 
     Returns records ``{episode_index, source_episode, start, end}``. Also
     writes them to ``meta/segments.jsonl`` inside ``out_root``.
@@ -144,6 +149,7 @@ def write_segmented_dataset(
     grouped = _group_rows(dataset.hf_dataset)
     if not grouped:
         raise ValueError(f"no frames in {source}")
+    grouped = _select_episodes(grouped, episodes, source)
 
     segments: list[dict] = []
     writer = _create_writer(
@@ -196,6 +202,7 @@ def convert_dataset(
     min_segment_frames: int | None = None,
     source_frames: Mapping | None = None,
     repo_id: str | None = None,
+    episodes: Iterable[int] | None = None,
 ) -> ConvertResult:
     """Copy ``v3_root``, segment it, and convert the copy to GR00T v2.1.
 
@@ -205,6 +212,10 @@ def convert_dataset(
 
     When ``ffmpeg`` is missing, the segmented v3 dataset is still published to
     ``out_root`` with ``CONVERT_BLOCKED.txt``, and ``v2_written`` is false.
+
+    ``episodes`` limits the copy to those accumulated v3 episode indices.
+    ``None`` converts the whole dataset. Segment ``source_episode`` values
+    stay those v3 indices.
     """
     from gear_sonic.data.record.convert.groot_meta import (
         add_task_description_column,
@@ -242,6 +253,7 @@ def convert_dataset(
             min_segment_frames=min_segment_frames,
             source_frames=source_frames,
             repo_id=chosen_repo,
+            episodes=episodes,
         )
         _publish_tree(segmented, destination)
         modality = build_modality()
@@ -334,6 +346,23 @@ def _read_info(root: Path) -> dict:
     if not isinstance(info, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return info
+
+
+def _select_episodes(grouped: dict[int, list[dict]], episodes: Iterable[int] | None, source: Path) -> dict:
+    """Keep ``episodes`` when set. Keys stay the accumulated v3 episode indices."""
+    if episodes is None:
+        return grouped
+    selected: set[int] = set()
+    for episode in episodes:
+        if isinstance(episode, bool) or not isinstance(episode, (int, np.integer)):
+            raise TypeError(f"episodes must be ints, got {episode!r}")
+        selected.add(int(episode))
+    if not selected:
+        raise ValueError("episodes is empty")
+    missing = sorted(selected - set(grouped))
+    if missing:
+        raise ValueError(f"episodes {missing} are not in {source}")
+    return {episode: grouped[episode] for episode in selected}
 
 
 def _resolve_min_frames(fps: int, min_segment_s: float, min_segment_frames: int | None) -> int:

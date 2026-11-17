@@ -8,6 +8,7 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 import numpy as np
+import pytest
 from lerobot.datasets import LeRobotDataset
 
 from gear_sonic.data.record.schema import (
@@ -22,7 +23,7 @@ from gear_sonic.data.record.schema import (
     features,
     load_layout,
 )
-from gear_sonic.data.record.writer import write_episode
+from gear_sonic.data.record.writer import append_episode, write_episode
 
 _HEIGHT = 16
 _WIDTH = 16
@@ -139,3 +140,102 @@ def test_write_episode_reloads_four_frames(tmp_path):
 
     stale_flags = dataset[2]["quality.flags"]
     assert int(stale_flags.reshape(-1)[0]) == CAMERA_STALE
+
+
+def test_append_episode_twice_and_rejects_a_different_layout(tmp_path):
+    state_dim = int(load_layout()["state_dim"])
+    root = tmp_path / "dataset"
+    metadata = {"source_commit": "abc123", "success": True, "camera_offset_ns": 5}
+    first = append_episode(
+        _four_rows(state_dim),
+        _frames(),
+        root,
+        fps=_FPS,
+        task="pick up the cup",
+        t0_ns=1_000,
+        metadata=metadata,
+        image_hw=(_HEIGHT, _WIDTH),
+    )
+    second = append_episode(
+        _four_rows(state_dim),
+        _frames(),
+        root,
+        fps=_FPS,
+        task="pick up the cup",
+        t0_ns=2_000,
+        metadata={"source_commit": "def456", "success": False},
+        image_hw=(_HEIGHT, _WIDTH),
+    )
+    assert (first, second) == (0, 1)
+
+    for index, origin, commit, success in (
+        (0, 1_000, "abc123", True),
+        (1, 2_000, "def456", False),
+    ):
+        clock = json.loads(
+            (root / "meta" / "grid_clock" / f"episode_{index:06d}.json").read_text(encoding="utf-8")
+        )
+        quality = json.loads(
+            (root / "meta" / "quality" / f"episode_{index:06d}.json").read_text(encoding="utf-8")
+        )
+        assert clock["grid_origin_monotonic_ns"] == origin
+        assert clock["fps"] == _FPS
+        assert clock["source_commit"] == commit
+        assert quality["n_rows"] == 4
+        assert quality["success"] is success
+
+    info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))
+    assert info["video_files_size_in_mb"] == 100
+    assert info["data_files_size_in_mb"] == 50
+    assert info["total_episodes"] == 2
+
+    kwargs = {"repo_id": REPO_ID, "root": root}
+    if "video_backend" in inspect.signature(LeRobotDataset.__init__).parameters:
+        kwargs["video_backend"] = "pyav"
+    dataset = LeRobotDataset(**kwargs)
+    assert dataset.num_episodes == 2
+    assert len(dataset) == 8
+    starts = []
+    for index in range(len(dataset)):
+        item = dataset[index]
+        episode = int(np.asarray(item["episode_index"]).reshape(-1)[0])
+        frame = int(np.asarray(item["frame_index"]).reshape(-1)[0])
+        stamp = float(np.asarray(item["timestamp"]).reshape(-1)[0])
+        assert abs(stamp - frame / _FPS) <= 1e-4
+        if frame == 0:
+            starts.append((episode, stamp))
+    assert sorted(starts) == [(0, 0.0), (1, 0.0)]
+
+    with pytest.raises(ValueError):
+        append_episode(
+            _four_rows(state_dim),
+            _frames(),
+            root,
+            fps=_FPS + 1,
+            task="pick up the cup",
+            t0_ns=3_000,
+            metadata={"success": True},
+            image_hw=(_HEIGHT, _WIDTH),
+        )
+    with pytest.raises(ValueError):
+        append_episode(
+            _four_rows(state_dim),
+            _frames(),
+            root,
+            fps=_FPS,
+            task="pick up the cup",
+            t0_ns=3_000,
+            metadata={"success": True},
+            image_hw=(_HEIGHT // 2, _WIDTH // 2),
+        )
+    info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))
+    assert info["total_episodes"] == 2
+
+
+def _four_rows(state_dim: int) -> list[Row]:
+    return [
+        _row(state_dim, image_index=0, valid=1, flags=0, stamp=0.0),
+        _row(state_dim, image_index=1, valid=1, flags=0, stamp=1.0),
+        _row(state_dim, image_index=2, valid=1, flags=0, stamp=2.0),
+        _row(state_dim, image_index=0, valid=1, flags=0, stamp=3.0),
+    ]
