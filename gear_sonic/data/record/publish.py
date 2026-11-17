@@ -136,6 +136,43 @@ def append_source(root, record: dict) -> None:
     _atomic_write(path, existing + line)
 
 
+def unconverted_episodes(v3_root, groot_root) -> list[int]:
+    """v3 episodes in ``sources.jsonl`` that no GR00T segment comes from yet."""
+    converted = set()
+    segments = Path(groot_root) / "meta" / "segments.jsonl"
+    if segments.is_file():
+        for line in segments.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                converted.add(int(json.loads(line)["source_episode"]))
+    appended = sorted({int(record["episode_index"]) for record in read_sources(v3_root)})
+    return [index for index in appended if index not in converted]
+
+
+def pushed_state_path(root) -> Path:
+    """Beside the dataset, so recording a push never changes what was pushed."""
+    dataset = Path(root)
+    return dataset.with_name(f"{dataset.name}.pushed.json")
+
+
+def needs_push(root, repo_id) -> bool:
+    """Whether ``root`` holds episodes its last successful push to ``repo_id`` did not."""
+    info_path = Path(root) / "meta" / "info.json"
+    if not info_path.is_file():
+        return False
+    total = json.loads(info_path.read_text(encoding="utf-8")).get("total_episodes")
+    state_path = pushed_state_path(root)
+    if not state_path.is_file():
+        return True
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    return state.get("repo_id") != repo_id or state.get("total_episodes") != total
+
+
+def mark_pushed(root, repo_id, url) -> None:
+    info = json.loads((Path(root) / "meta" / "info.json").read_text(encoding="utf-8"))
+    state = {"repo_id": repo_id, "total_episodes": info.get("total_episodes"), "url": url}
+    _atomic_write(pushed_state_path(root), json.dumps(state, indent=2) + "\n")
+
+
 def write_dataset_card(root, *, title: str) -> None:
     """Write a short ``README.md`` when the dataset does not already have one."""
     dataset = Path(root)

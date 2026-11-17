@@ -45,9 +45,12 @@ def build_hub_api(token: str):
     return HfApi(token=token)
 
 
-def teleop_controller_running() -> bool:
-    """Whether a live ``g1_deploy_onnx`` process is in ``/proc``."""
-    proc = Path("/proc")
+def teleop_controller_running(proc: Path = Path("/proc")) -> bool:
+    """Whether a live ``g1_deploy_onnx`` process is in ``/proc``.
+
+    An exited controller stays in ``/proc`` as a zombie until its tmux pane is
+    closed; it no longer runs, so it does not count.
+    """
     if not proc.is_dir():
         return False
     for entry in proc.iterdir():
@@ -55,10 +58,12 @@ def teleop_controller_running() -> bool:
             continue
         try:
             text = (entry / "comm").read_text(encoding="utf-8", errors="replace")
+            stat_text = (entry / "stat").read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         name = text.split("\n", 1)[0].strip("\x00 ")
-        if name.startswith("g1_deploy_onnx"):
+        state = stat_text.rsplit(")", 1)[-1].split()[:1]
+        if name.startswith("g1_deploy_onnx") and state != ["Z"]:
             return True
     return False
 
@@ -78,8 +83,11 @@ def _publish(argv, controller_running) -> int:
     from gear_sonic.data.record.convert.segment import convert_dataset
     from gear_sonic.data.record.publish import (
         append_source,
+        mark_pushed,
+        needs_push,
         push_dataset,
         read_token,
+        unconverted_episodes,
         window_already_appended,
         write_dataset_card,
     )
@@ -132,7 +140,6 @@ def _publish(argv, controller_running) -> int:
     layout = load_layout()
     min_frames = max(1, int(round(float(args.fps) * float(args.min_segment_s))))
     added: list[dict] = []
-    new_indices: list[int] = []
     for session in sessions:
         info = _session_info(session)
         reader = SessionReader(session)
@@ -164,55 +171,54 @@ def _publish(argv, controller_running) -> int:
             if record is None:
                 continue
             added.append(record)
-            new_indices.append(int(record["episode_index"]))
 
-    urls: list[tuple[str, str]] = []
-    if new_indices:
+    # Covers episodes a run appended to v3 but failed to convert, not only this run's.
+    pending = unconverted_episodes(args.v3_root, args.groot_root)
+    if pending:
         with tempfile.TemporaryDirectory(prefix="g1-publish-") as raw:
             converted = Path(raw) / "groot_v21"
             result = convert_dataset(
                 args.v3_root,
                 converted,
                 min_segment_s=args.min_segment_s,
-                episodes=new_indices,
+                episodes=pending,
                 repo_id=REPO_ID,
             )
             if result.blocked:
                 print(result.message, file=sys.stderr)
                 return 1
             append_v21(args.groot_root, result.out_root)
-        write_dataset_card(args.v3_root, title=args.repo_id)
-        write_dataset_card(args.groot_root, title=args.groot_repo_id)
-        if not args.no_push:
+    targets = [
+        ("v3 repo", args.v3_root, args.repo_id, "v3.0"),
+        ("groot repo", args.groot_root, args.groot_repo_id, "v2.1"),
+    ]
+    for _label, root, repo_id, _tag in targets:
+        if (root / "meta" / "info.json").is_file():
+            write_dataset_card(root, title=repo_id)
+
+    urls: list[tuple[str, str]] = []
+    if not args.no_push:
+        # A push that failed on an earlier run is retried here even when nothing new was added.
+        due = [target for target in targets if needs_push(target[1], target[2])]
+        if due:
             token = read_token(args.token_file)
             api = build_hub_api(token)
-            message = f"Add {len(added)} G1 pico teleop episode(s)"
-            urls.append(
-                (
-                    "v3 repo",
-                    push_dataset(
-                        api,
-                        args.v3_root,
-                        args.repo_id,
-                        private=args.private,
-                        tag="v3.0",
-                        commit_message=message,
-                    ),
-                )
+            message = (
+                f"Add {len(added)} G1 pico teleop episode(s)"
+                if added
+                else "Upload G1 pico teleop episodes from an earlier run"
             )
-            urls.append(
-                (
-                    "groot repo",
-                    push_dataset(
-                        api,
-                        args.groot_root,
-                        args.groot_repo_id,
-                        private=args.private,
-                        tag="v2.1",
-                        commit_message=message,
-                    ),
+            for label, root, repo_id, tag in due:
+                url = push_dataset(
+                    api,
+                    root,
+                    repo_id,
+                    private=args.private,
+                    tag=tag,
+                    commit_message=message,
                 )
-            )
+                mark_pushed(root, repo_id, url)
+                urls.append((label, url))
     _print_summary(added, args.v3_root, args.groot_root, urls, pushed=not args.no_push)
     return 0
 
@@ -311,6 +317,10 @@ def _skip_reason(rows, *, valid_rows, state_empty, min_frames, min_segment_s, fp
             f"{valid_rows} valid rows is shorter than one {min_segment_s:g}s segment "
             f"({min_frames} frames at {fps} fps)"
         )
+    from gear_sonic.data.record.convert.segment import segment_invalid
+
+    if not segment_invalid([row.valid != 0 for row in rows], min_segment_frames=min_frames):
+        return f"no run of {min_frames} consecutive valid rows ({min_segment_s:g}s at {fps} fps)"
     return None
 
 
@@ -351,8 +361,10 @@ def _last_stamp(reader) -> int | None:
 
 
 def _print_summary(added, v3_root, groot_root, urls, *, pushed: bool) -> None:
-    if not added:
+    if not added and not urls:
         print("nothing to publish")
+    elif not added:
+        print("no new episodes; uploaded episodes from an earlier run")
     else:
         total_rows = sum(item["rows"] for item in added)
         total_valid = sum(item["valid_rows"] for item in added)

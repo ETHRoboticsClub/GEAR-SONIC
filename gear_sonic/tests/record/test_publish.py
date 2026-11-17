@@ -14,7 +14,7 @@ import pytest
 
 from gear_sonic.data.record.publish import push_dataset
 from gear_sonic.data.record.session_log import SessionWriter
-from gear_sonic.scripts.publish_episodes import main
+from gear_sonic.scripts.publish_episodes import main, teleop_controller_running
 from gear_sonic.scripts.run_pico_session_recorder import write_session_json
 from gear_sonic.tests.record.test_end_to_end import _g1_payload, _jpeg, _tracking_payload
 
@@ -168,6 +168,20 @@ def test_running_controller_refuses(tmp_path, monkeypatch, capsys):
     assert _TOKEN not in captured.err
 
 
+def test_exited_controller_does_not_block_publishing(tmp_path):
+    def process(pid: int, comm: str, state: str) -> None:
+        entry = tmp_path / str(pid)
+        entry.mkdir()
+        (entry / "comm").write_text(comm + "\n", encoding="utf-8")
+        (entry / "stat").write_text(f"{pid} ({comm}) {state} 1 1 1\n", encoding="utf-8")
+
+    process(10, "bash", "S")
+    process(11, "g1_deploy_onnx_", "Z")
+    assert teleop_controller_running(tmp_path) is False
+    process(12, "g1_deploy_onnx_", "R")
+    assert teleop_controller_running(tmp_path) is True
+
+
 def test_other_visibility_raises_without_upload(tmp_path):
     api = FakeHub(private_override={_V3_REPO: True})
     with pytest.raises(RuntimeError, match="private"):
@@ -181,6 +195,59 @@ def test_other_visibility_raises_without_upload(tmp_path):
         )
     assert not any(call[0] == "upload_folder" for call in api.calls)
     assert any(call[0] == "create_repo" for call in api.calls)
+
+
+def test_failed_push_is_retried_on_the_next_run(tmp_path, monkeypatch, capsys):
+    session = tmp_path / "session_c"
+    _write_session(session, success=True)
+    token_file = tmp_path / "hf_token"
+    _write_token(token_file)
+    v3 = tmp_path / "v3"
+    groot = tmp_path / "groot"
+
+    class FailingGroot(FakeHub):
+        def upload_folder(self, *, folder_path, repo_id, **kwargs):
+            if repo_id == _GROOT_REPO:
+                raise ConnectionError("network down")
+            return super().upload_folder(folder_path=folder_path, repo_id=repo_id, **kwargs)
+
+    failing = FailingGroot()
+    monkeypatch.setattr("gear_sonic.scripts.publish_episodes.build_hub_api", lambda token: failing)
+    assert main(_argv(session, v3, groot, token_file), controller_running=lambda: False) == 1
+    capsys.readouterr()
+
+    api = FakeHub()
+    monkeypatch.setattr("gear_sonic.scripts.publish_episodes.build_hub_api", lambda token: api)
+    assert main(_argv(session, v3, groot, token_file), controller_running=lambda: False) == 0
+    out = capsys.readouterr().out
+    uploads = [call[1]["repo_id"] for call in api.calls if call[0] == "upload_folder"]
+    assert uploads == [_GROOT_REPO]
+    assert "no new episodes" in out
+    assert len((v3 / "meta" / "sources.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_failed_conversion_is_converted_on_the_next_run(tmp_path, monkeypatch, capsys):
+    session = tmp_path / "session_d"
+    _write_session(session, success=True)
+    token_file = tmp_path / "hf_token"
+    _write_token(token_file)
+    v3 = tmp_path / "v3"
+    groot = tmp_path / "groot"
+    argv = _argv(session, v3, groot, token_file) + ["--no-push"]
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("conversion interrupted")
+
+    monkeypatch.setattr("gear_sonic.data.record.convert.segment.convert_dataset", fail)
+    assert main(argv, controller_running=lambda: False) == 1
+    assert (v3 / "meta" / "info.json").is_file()
+    assert not (groot / "meta" / "info.json").exists()
+    capsys.readouterr()
+
+    monkeypatch.undo()
+    assert main(argv, controller_running=lambda: False) == 0
+    info = json.loads((groot / "meta" / "info.json").read_text(encoding="utf-8"))
+    assert info["total_episodes"] == 1
 
 
 def _argv(session: Path, v3: Path, groot: Path, token_file: Path) -> list[str]:
