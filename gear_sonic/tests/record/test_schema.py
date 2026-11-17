@@ -21,6 +21,7 @@ from gear_sonic.data.record.schema import (
     STATE_INTERP,
     STATE_INTERP_MAX_NS,
     TOKEN_DIM,
+    action_max_age_ns,
     features,
     iter_records,
     load_layout,
@@ -102,7 +103,7 @@ def test_flag_bits_are_distinct():
     flags = [STATE_INTERP, ACTION_MISSING, CAMERA_STALE, PICO_INTERP, PICO_STALE]
     assert flags == [1 << 0, 1 << 1, 1 << 2, 1 << 3, 1 << 4]
     assert len(set(flags)) == len(flags)
-    assert ACTION_MAX_AGE_NS == 1_000_000_000 // FPS == period_ns()
+    assert ACTION_MAX_AGE_NS == action_max_age_ns() == 30_000_000 == period_ns() * 3 // 2
     assert period_ns(FPS) == 20_000_000
     assert STATE_INTERP_MAX_NS == 60_000_000
     assert CAMERA_STALE_NS == 100_000_000

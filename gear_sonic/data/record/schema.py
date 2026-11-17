@@ -100,7 +100,7 @@ CALLS
       Rules:
       * t_k = t0 + (k*1_000_000_000 + fps//2)//fps
       * Robot state: latest sample with stamp<=t_k. If its age <= one period, use it. Else if bracketing samples are <= STATE_INTERP_MAX_NS apart, linearly interpolate joints/vel/ang vel and slerp base_quat, set STATE_INTERP, row stays valid. Longer gap: row invalid (hold last finite state so shapes exist).
-      * Action, hand actions, token: NEVER interpolate. Use the latest g1_debug sample with stamp<=t_k only if age <= one period AND token is not None. Otherwise hold last value, set ACTION_MISSING, valid=0.
+      * Action, hand actions, token: NEVER interpolate. Use the latest g1_debug sample with stamp<=t_k only if age <= action_max_age_ns(fps) (1.5 periods) AND token is not None. Otherwise hold last value, set ACTION_MISSING, valid=0.
       * Camera: latest ImageRef with stamp<=t_k (never a future frame). Record age. Age > CAMERA_STALE_NS => CAMERA_STALE and valid=0. No image at all => CAMERA_STALE valid=0 image_index=-1.
       * PICO: interpolate poses between bracketing samples if gap <= PICO_INTERP_MAX_NS (lerp xyz, slerp quat, buttons/tracked flags from the latest sample at or before t_k). Set PICO_INTERP. If gap larger, hold last and set PICO_STALE. PICO flags alone do NOT clear valid.
       * A None-device tracking sample is valid data (tracked 0, NaNs) and can be a bracket endpoint; do not treat it as missing.
@@ -173,8 +173,17 @@ def period_ns(fps: int = FPS) -> int:
     return 1_000_000_000 // fps
 
 
-# Latest g1_debug sample is fresh enough to supply action and token for one grid step.
-ACTION_MAX_AGE_NS = period_ns(FPS)
+def action_max_age_ns(fps: int = FPS) -> int:
+    """Return how old the latest g1_debug sample may be and still supply action and token.
+
+    The controller publishes once per period with about 1 ms of jitter, so an
+    exact one-period limit marks about one grid row in ten missing. One and a
+    half periods accepts that jitter and still flags a dropped message.
+    """
+    return period_ns(fps) * 3 // 2
+
+
+ACTION_MAX_AGE_NS = action_max_age_ns(FPS)
 
 
 def _pico_names() -> tuple[str, ...]:

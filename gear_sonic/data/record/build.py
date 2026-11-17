@@ -38,6 +38,7 @@ from gear_sonic.data.record.schema import (
     Row,
     StateSample,
     TrackingSample,
+    action_max_age_ns,
     period_ns,
 )
 
@@ -293,12 +294,12 @@ def _kinematics(
     )
 
 
-def _action_at(previous: StateSample | None, t_ns: int, period: int):
+def _action_at(previous: StateSample | None, t_ns: int, max_age_ns: int):
     """Hold the latest sample's action numbers. Accept the token only while it is fresh."""
     if previous is None:
         return _ZERO_BODY, _ZERO_HAND, _ZERO_HAND, _ZERO_TOKEN, ACTION_MISSING
     age_ns = t_ns - previous.stamp_ns
-    if age_ns <= period and previous.token is not None:
+    if age_ns <= max_age_ns and previous.token is not None:
         return (
             previous.last_action,
             previous.last_left_hand_action,
@@ -329,6 +330,7 @@ def _row_at(
     t_ns: int,
     *,
     period: int,
+    action_max_age: int,
     scatter: _Scatter,
     state_samples,
     state_stamps: list[int],
@@ -356,7 +358,9 @@ def _row_at(
         g1_index = previous.index
         robot_age = (t_ns - previous.stamp_ns) / 1_000_000_000
 
-    action, left_action, right_action, token, action_flags = _action_at(previous, t_ns, period)
+    action, left_action, right_action, token, action_flags = _action_at(
+        previous, t_ns, action_max_age
+    )
     pico_prev, pico_next = _bracket(tracks, track_stamps, t_ns)
     pico, pico_sequence, pico_flags, pico_age = _tracking_at(pico_prev, pico_next, t_ns)
     image_index, camera_age, camera_flags = _camera_at(frames, frame_stamps, t_ns)
@@ -409,6 +413,7 @@ def build_rows(
         _row_at(
             t_ns,
             period=period,
+            action_max_age=action_max_age_ns(fps),
             scatter=scatter,
             state_samples=state_samples,
             state_stamps=[sample.stamp_ns for sample in state_samples],

@@ -22,6 +22,7 @@ from gear_sonic.data.record.schema import (
     ImageRef,
     StateSample,
     TrackingSample,
+    action_max_age_ns,
     load_layout,
     period_ns,
 )
@@ -228,11 +229,11 @@ def test_state_interp_at_60ms_does_not_blend_token():
     )
     row = rows[0]
     assert row.t_ns == t_k
+    assert t_k - previous.stamp_ns == action_max_age_ns(FPS)
     assert row.flags & STATE_INTERP
-    assert row.flags & ACTION_MISSING
-    assert row.valid == 0
-    assert row.token == (0.0,) * TOKEN_DIM
-    assert row.token != previous.token
+    assert row.flags & ACTION_MISSING == 0
+    assert row.valid == 1
+    assert row.token == previous.token
     assert row.token != following.token
     hip = _joint("left_hip_pitch_joint")
     thumb = _joint("left_hand_thumb_0_joint")
@@ -281,15 +282,15 @@ def test_state_gap_past_60ms_is_not_interpolated():
     assert row.joint_velocity == previous.body_dq
     assert row.state[hip] != pytest.approx(7.0)
     assert row.valid == 0
-    assert row.token == (0.0,) * TOKEN_DIM
+    assert row.token == previous.token
     assert row.action == previous.last_action
 
 
-def test_action_one_nanosecond_past_one_period_is_not_a_token_blend():
-    period = period_ns(FPS)
+def test_action_one_nanosecond_past_the_age_limit_is_not_a_token_blend():
+    limit = action_max_age_ns(FPS)
     t0 = 5_000_000_000
     fresh = make_state(
-        t0 - period,
+        t0 - limit,
         index=2,
         body_q=_body(BODY_DIM, **{"0": 1.0}),
         last_action=_body(BODY_DIM, **{"0": 6.0}),
@@ -307,11 +308,13 @@ def test_action_one_nanosecond_past_one_period_is_not_a_token_blend():
     assert held.flags & ACTION_MISSING == 0
     assert held.token == fresh.token
     assert held.action == fresh.last_action
-    assert held.state[_joint("left_hip_pitch_joint")] == 1.0
+    assert held.flags & STATE_INTERP
+    alpha = limit / (limit + 5_000_000)
+    assert held.state[_joint("left_hip_pitch_joint")] == pytest.approx(1.0 + 98.0 * alpha)
     assert held.valid == 1
 
     stale = make_state(
-        t0 - period - 1,
+        t0 - limit - 1,
         index=2,
         body_q=_body(BODY_DIM, **{"0": 1.0}),
         left_hand_q=(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
@@ -321,7 +324,7 @@ def test_action_one_nanosecond_past_one_period_is_not_a_token_blend():
         token=(4.0,) * TOKEN_DIM,
     )
     nxt = make_state(
-        stale.stamp_ns + 30_000_000,
+        stale.stamp_ns + 40_000_000,
         index=3,
         body_q=_body(BODY_DIM, **{"0": 11.0}),
         left_hand_q=(11.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
