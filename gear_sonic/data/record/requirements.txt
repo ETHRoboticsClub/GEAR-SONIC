@@ -1,0 +1,6 @@
+lerobot[dataset]==0.6.1
+pyzmq
+msgpack
+numpy
+opencv-python-headless
+pytest
