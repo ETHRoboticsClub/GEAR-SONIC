@@ -1,0 +1,45 @@
+{
+  "scope": "CPU helper timing, not system latency; synthetic angular intervals, not measured tracking gaps",
+  "timing_us": {
+    "previous": {
+      "median": 190.975,
+      "p95": 208.59404999999998
+    },
+    "slerp": {
+      "median": 86.968,
+      "p95": 103.789
+    }
+  },
+  "constant_turn_error_deg": [
+    {
+      "input_rotation_deg": 1,
+      "previous": 1.189917459576795e-06,
+      "slerp": 4.969616689786745e-17
+    },
+    {
+      "input_rotation_deg": 5,
+      "previous": 0.0001487566746756729,
+      "slerp": 0.0
+    },
+    {
+      "input_rotation_deg": 20,
+      "previous": 0.00953744307320194,
+      "slerp": 0.0
+    },
+    {
+      "input_rotation_deg": 60,
+      "previous": 0.2614804248601105,
+      "slerp": 0.0
+    },
+    {
+      "input_rotation_deg": 120,
+      "previous": 2.2042275039720285,
+      "slerp": 0.0
+    },
+    {
+      "input_rotation_deg": 179.9,
+      "previous": 8.115112822476844,
+      "slerp": 0.0
+    }
+  ]
+}

@@ -126,3 +126,39 @@ def test_resampled_wire_joints_match_the_wire_smpl_rotations(start_deg, end_deg)
     ).numpy()
     expected = np.einsum('nij,nkj->nki', root.inv().as_matrix(), world)
     np.testing.assert_allclose(fields['smpl_joints'], expected, atol=3e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize('angle_deg', [0.00001, 20., 120., 179.9])
+@pytest.mark.parametrize('root_sign', [1., -1.])
+def test_resampling_preserves_constant_angular_speed(angle_deg, root_sign):
+    """A delayed measurement must not speed up/slow down the interpolated turn."""
+    r = server.UniformPoseResampler(50, 5)
+    start = np.zeros((21, 3))
+    end = start.copy()
+    end[:, 1] = np.radians(angle_deg)
+    r.push(0, start, np.array([1., 0., 0., 0.]))
+    root = Rotation.from_euler('y', angle_deg, degrees=True).as_quat(scalar_first=True)
+    frames = r.push(80 * MS, end, root_sign * root)
+    assert [f[1] for f in frames] == [20 * MS, 40 * MS, 60 * MS, 80 * MS]
+    for _, stamp, pose, quat in frames:
+        expected_angle = np.radians(angle_deg) * stamp / (80 * MS)
+        np.testing.assert_allclose(pose[:, 1], expected_angle, atol=2e-7, rtol=0)
+        expected_root = Rotation.from_rotvec([0., expected_angle, 0.])
+        actual_root = Rotation.from_quat(quat, scalar_first=True)
+        assert (expected_root.inv() * actual_root).magnitude() < 2e-7
+
+
+def test_resampled_rotations_follow_independent_scipy_slerp():
+    from scipy.spatial.transform import Slerp
+
+    rng = np.random.default_rng(20261117)
+    start = Rotation.random(21, random_state=rng)
+    end = Rotation.random(21, random_state=rng)
+    r = server.UniformPoseResampler(50, 5)
+    r.push(0, start.as_rotvec(), np.array([1., 0., 0., 0.]))
+    for _, stamp, pose, _ in r.push(93 * MS, end.as_rotvec(), np.array([1., 0., 0., 0.])):
+        expected = Rotation.concatenate([
+            Slerp([0., 93.], Rotation.concatenate([a, b]))([stamp / MS])
+            for a, b in zip(start, end)
+        ])
+        assert np.max((expected.inv() * Rotation.from_rotvec(pose)).magnitude()) < 2e-7

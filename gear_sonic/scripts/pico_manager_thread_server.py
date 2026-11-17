@@ -517,36 +517,33 @@ def compute_hand_joints_from_inputs(
     return left_hand_joints, right_hand_joints
 
 
-def _quat_lerp_normalized(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray:
+def _quat_slerp(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray:
+    """Shortest-arc, constant-speed interpolation of (..., 4) quaternions.
+
+    Both inputs use the same component order (xyzw or wxyz). Sinc weights
+    retain the exact spherical interpolation limit for coincident rotations.
     """
-    Linear interpolate two quaternions and renormalize. Input shape (4,), xyzw order.
-    Ensures shortest path by flipping sign if dot < 0.
-    """
-    dot = float(np.dot(q0, q1))
-    if dot < 0.0:
-        q1 = -q1
-    q = (1.0 - alpha) * q0 + alpha * q1
-    norm = np.linalg.norm(q)
-    if norm > 0:
-        q = q / norm
-    return q
+    q0 = np.asarray(q0, dtype=np.float64)
+    q1 = np.asarray(q1, dtype=np.float64)
+    q0 = q0 / np.linalg.norm(q0, axis=-1, keepdims=True)
+    q1 = q1 / np.linalg.norm(q1, axis=-1, keepdims=True)
+    dot = np.sum(q0 * q1, axis=-1, keepdims=True)
+    q1 = np.where(dot < 0., -q1, q1)
+    angle = np.arccos(np.clip(np.abs(dot), 0., 1.)) / np.pi
+    denominator = np.sinc(angle)
+    q = ((1. - alpha) * np.sinc((1. - alpha) * angle) * q0
+         + alpha * np.sinc(alpha * angle) * q1) / denominator
+    return q / np.linalg.norm(q, axis=-1, keepdims=True)
 
 
 def _interp_pose_axis_angle(
     prev_pose: np.ndarray, curr_pose: np.ndarray, alpha: float
 ) -> np.ndarray:
-    """
-    Interpolate axis-angle joint poses by converting to quats, lerp-normalize, then back.
-    prev_pose, curr_pose: (21,3) axis-angle (rotvec)
-    Returns (21,3) axis-angle.
-    """
-    prev_quats = sRot.from_rotvec(prev_pose.reshape(-1, 3)).as_quat()  # (N,4) xyzw
+    """Interpolate (21, 3) joint rotvecs at constant angular speed in SO(3)."""
+    prev_quats = sRot.from_rotvec(prev_pose.reshape(-1, 3)).as_quat()
     curr_quats = sRot.from_rotvec(curr_pose.reshape(-1, 3)).as_quat()
-    out_quats = np.empty_like(prev_quats)
-    for i in range(prev_quats.shape[0]):
-        out_quats[i] = _quat_lerp_normalized(prev_quats[i], curr_quats[i], alpha)
-    out_pose = sRot.from_quat(out_quats).as_rotvec().reshape(prev_pose.shape)
-    return out_pose
+    out_quats = _quat_slerp(prev_quats, curr_quats, alpha)
+    return sRot.from_quat(out_quats).as_rotvec().reshape(prev_pose.shape)
 
 
 def _pose_stream_common(
@@ -1009,7 +1006,7 @@ class UniformPoseResampler:
             result.append((
                 index, target_ns,
                 _interp_pose_axis_angle(prev_pose, pose, alpha).astype(np.float32),
-                _quat_lerp_normalized(prev_quat, quat, alpha).astype(np.float32),
+                _quat_slerp(prev_quat, quat, alpha).astype(np.float32),
             ))
         self.previous = current
         self.last_index = newest
