@@ -12,7 +12,7 @@ os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 import pytest
 
-from gear_sonic.data.record.publish import push_dataset
+from gear_sonic.data.record.publish import delete_raw_session, push_dataset
 from gear_sonic.data.record.session_log import SessionWriter
 from gear_sonic.scripts.publish_episodes import main, teleop_controller_running
 from gear_sonic.scripts.run_pico_session_recorder import write_session_json
@@ -82,12 +82,14 @@ def test_publish_then_second_run_is_idle(tmp_path, monkeypatch, capsys):
     _write_token(token_file)
     v3 = tmp_path / "v3"
     groot = tmp_path / "groot"
+    raw = tmp_path / "raw"
+    raw.mkdir()
     api = FakeHub()
     monkeypatch.setattr(
         "gear_sonic.scripts.publish_episodes.build_hub_api",
         lambda token: api,
     )
-    argv = _argv(session, v3, groot, token_file)
+    argv = _argv(session, v3, groot, token_file) + ["--raw-root", str(raw)]
     assert main(argv, controller_running=lambda: False) == 0
     captured = capsys.readouterr()
     assert _TOKEN not in captured.out
@@ -120,11 +122,19 @@ def test_publish_then_second_run_is_idle(tmp_path, monkeypatch, capsys):
     assert sources[0]["session_id"] == "session_a"
     assert sources[0]["success"] is True
     assert not (groot / "meta" / "stats.json").exists()
+    assert f"deleted raw session {session}" in captured.out
+    assert not session.exists()
+    assert raw.is_dir()
+    assert v3.is_dir()
+    assert groot.is_dir()
 
     calls_after_push = len(api.calls)
+    _write_session(session, success=True)
     assert main(argv, controller_running=lambda: False) == 0
     again = capsys.readouterr()
     assert "nothing to publish" in again.out
+    assert "deleted raw session" not in again.out
+    assert session.is_dir()
     assert _TOKEN not in again.out
     assert _TOKEN not in again.err
     assert len(api.calls) == calls_after_push
@@ -152,6 +162,8 @@ def test_no_push_makes_no_api_calls(tmp_path, monkeypatch, capsys):
     assert _TOKEN not in captured.out
     assert _TOKEN not in captured.err
     assert "push: skipped" in captured.out
+    assert "deleted raw session" not in captured.out
+    assert session.is_dir()
     assert (tmp_path / "v3" / "meta" / "info.json").is_file()
     assert (tmp_path / "groot" / "meta" / "info.json").is_file()
 
@@ -214,7 +226,9 @@ def test_failed_push_is_retried_on_the_next_run(tmp_path, monkeypatch, capsys):
     failing = FailingGroot()
     monkeypatch.setattr("gear_sonic.scripts.publish_episodes.build_hub_api", lambda token: failing)
     assert main(_argv(session, v3, groot, token_file), controller_running=lambda: False) == 1
-    capsys.readouterr()
+    failed = capsys.readouterr()
+    assert session.is_dir()
+    assert "deleted raw session" not in failed.out
 
     api = FakeHub()
     monkeypatch.setattr("gear_sonic.scripts.publish_episodes.build_hub_api", lambda token: api)
@@ -223,6 +237,8 @@ def test_failed_push_is_retried_on_the_next_run(tmp_path, monkeypatch, capsys):
     uploads = [call[1]["repo_id"] for call in api.calls if call[0] == "upload_folder"]
     assert uploads == [_GROOT_REPO]
     assert "no new episodes" in out
+    assert f"deleted raw session {session}" in out
+    assert not session.exists()
     assert len((v3 / "meta" / "sources.jsonl").read_text(encoding="utf-8").splitlines()) == 1
 
 
@@ -248,6 +264,124 @@ def test_failed_conversion_is_converted_on_the_next_run(tmp_path, monkeypatch, c
     assert main(argv, controller_running=lambda: False) == 0
     info = json.loads((groot / "meta" / "info.json").read_text(encoding="utf-8"))
     assert info["total_episodes"] == 1
+    assert session.is_dir()
+
+
+def test_skipped_window_keeps_the_raw_session(tmp_path, monkeypatch, capsys):
+    session = tmp_path / "session_skip"
+    bounds = _write_session(session, success=True, skipped_window=True)
+    token_file = tmp_path / "hf_token"
+    _write_token(token_file)
+    v3 = tmp_path / "v3"
+    groot = tmp_path / "groot"
+    api = FakeHub()
+    monkeypatch.setattr("gear_sonic.scripts.publish_episodes.build_hub_api", lambda token: api)
+    code = main(_argv(session, v3, groot, token_file), controller_running=lambda: False)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert _TOKEN not in captured.out
+    assert _TOKEN not in captured.err
+    assert session.is_dir()
+    assert "deleted raw session" not in captured.out
+    assert "no robot state in the window" in captured.out
+    keep = (
+        f"keep raw session {session}: "
+        f"window {bounds['skipped_start_ns']}-{bounds['skipped_stop_ns']} "
+        "was skipped (no robot state in the window)"
+    )
+    assert keep in captured.out
+    sources = [
+        json.loads(line)
+        for line in (v3 / "meta" / "sources.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(sources) == 1
+    assert sources[0]["start_ns"] == bounds["start_ns"]
+    assert sources[0]["stop_ns"] == bounds["stop_ns"]
+    assert {call[1]["repo_id"] for call in api.calls if call[0] == "upload_folder"} == {
+        _V3_REPO,
+        _GROOT_REPO,
+    }
+
+
+def test_delete_failure_after_push_exits_nonzero(tmp_path, monkeypatch, capsys):
+    session = tmp_path / "session_busy"
+    _write_session(session, success=True)
+    token_file = tmp_path / "hf_token"
+    _write_token(token_file)
+    v3 = tmp_path / "v3"
+    groot = tmp_path / "groot"
+
+    def fail_delete(*_args, **_kwargs):
+        raise OSError("device busy")
+
+    monkeypatch.setattr("gear_sonic.data.record.publish.delete_raw_session", fail_delete)
+    monkeypatch.setattr(
+        "gear_sonic.scripts.publish_episodes.build_hub_api",
+        lambda token: FakeHub(),
+    )
+    code = main(_argv(session, v3, groot, token_file), controller_running=lambda: False)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert session.is_dir()
+    assert "v3 repo:" in captured.out
+    assert "groot repo:" in captured.out
+    assert "https://huggingface.co/datasets/" in captured.out
+    assert "push succeeded, but failed to delete raw session" in captured.err
+    assert "device busy" in captured.err
+    assert _TOKEN not in captured.out
+    assert _TOKEN not in captured.err
+
+
+def test_delete_raw_session_keeps_outside_symlink_and_roots(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    v3 = tmp_path / "v3"
+    groot = tmp_path / "groot"
+    v3.mkdir()
+    groot.mkdir()
+    session = tmp_path / "passed" / "session_a"
+    session.mkdir(parents=True)
+    (session / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "precious").write_text("keep", encoding="utf-8")
+    (session / "linked_dir").symlink_to(external, target_is_directory=True)
+    outside = tmp_path / "keep.txt"
+    outside.write_text("safe", encoding="utf-8")
+    (session / "linked_file").symlink_to(outside)
+
+    delete_raw_session(session, raw, v3, groot)
+
+    assert not session.exists()
+    assert (external / "precious").read_text(encoding="utf-8") == "keep"
+    assert outside.read_text(encoding="utf-8") == "safe"
+    assert raw.is_dir()
+    assert v3.is_dir()
+    assert groot.is_dir()
+    assert (tmp_path / "passed").is_dir()
+
+
+def test_delete_raw_session_refuses_roots_and_symlinks(tmp_path):
+    raw = tmp_path / "raw"
+    session = raw / "session_a"
+    session.mkdir(parents=True)
+    v3 = tmp_path / "v3"
+    groot = tmp_path / "groot"
+    v3.mkdir()
+    groot.mkdir()
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        delete_raw_session(raw, raw, v3, groot)
+    with pytest.raises(RuntimeError, match="refusing to delete"):
+        delete_raw_session(tmp_path, raw, v3, groot)
+    link = tmp_path / "link"
+    link.symlink_to(session, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="symlink"):
+        delete_raw_session(link, raw, v3, groot)
+    assert session.is_dir()
+    assert raw.is_dir()
+    assert v3.is_dir()
+    assert groot.is_dir()
 
 
 def _argv(session: Path, v3: Path, groot: Path, token_file: Path) -> list[str]:
@@ -279,7 +413,7 @@ def _write_token(path: Path) -> None:
     os.chmod(path, 0o600)
 
 
-def _write_session(root: Path, *, success: bool) -> None:
+def _write_session(root: Path, *, success: bool, skipped_window: bool = False) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     write_session_json(root, task="walk to the table", source_commit="test-commit", settings={"camera": ""})
     writer = SessionWriter(root, queue_size=256, disk_free_bytes=lambda: 10 * 1024**3)
@@ -295,5 +429,18 @@ def _write_session(root: Path, *, success: bool) -> None:
         stop = start + (count - 1) * step
         writer.mark_event("episode_start", start)
         writer.mark_event("episode_stop", stop, {"success": success})
+        skipped_start = None
+        skipped_stop = None
+        if skipped_window:
+            skipped_start = stop + 5_000_000_000
+            skipped_stop = skipped_start + 1_000_000_000
+            writer.mark_event("episode_start", skipped_start)
+            writer.mark_event("episode_stop", skipped_stop, {"success": False})
+        return {
+            "start_ns": start,
+            "stop_ns": stop,
+            "skipped_start_ns": skipped_start,
+            "skipped_stop_ns": skipped_stop,
+        }
     finally:
         writer.close()

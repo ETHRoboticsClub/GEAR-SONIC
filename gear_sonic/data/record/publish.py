@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 
@@ -171,6 +172,65 @@ def mark_pushed(root, repo_id, url) -> None:
     info = json.loads((Path(root) / "meta" / "info.json").read_text(encoding="utf-8"))
     state = {"repo_id": repo_id, "total_episodes": info.get("total_episodes"), "url": url}
     _atomic_write(pushed_state_path(root), json.dumps(state, indent=2) + "\n")
+
+
+def push_is_current(root, repo_id) -> bool:
+    """Whether ``mark_pushed`` has recorded this dataset's current episode count."""
+    if not (Path(root) / "meta" / "info.json").is_file():
+        return False
+    return not needs_push(root, repo_id)
+
+
+def session_fully_consumed(root, session_id, windows) -> bool:
+    """Whether every Enter-marked window is already a line in ``sources.jsonl``.
+
+    A session with no windows is not consumed: nothing from it was appended.
+    A skipped window is missing from the ledger and keeps the session.
+    """
+    if not windows:
+        return False
+    for window in windows:
+        if not window_already_appended(root, session_id, window["start_ns"], window["stop_ns"]):
+            return False
+    return True
+
+
+def delete_raw_session(session, *protected) -> None:
+    """Remove one raw session directory with ``shutil.rmtree``.
+
+    ``protected`` paths (the raw root and the dataset roots) are never removed,
+    including when ``session`` is one of them or a parent of one of them.
+    The session path must be a real directory. A symlink is refused so the
+    delete cannot follow a link out of the directory the caller passed.
+    Links inside the session are unlinked and not descended into.
+    """
+    path = Path(session)
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"cannot stat {path}: {exc}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise RuntimeError(f"{path} is a symlink; refusing to follow it")
+    if not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"{path} is not a directory")
+    for root in protected:
+        if _deletion_would_remove(path, Path(root)):
+            raise RuntimeError(f"refusing to delete {path}; it would remove {root}")
+    shutil.rmtree(path)
+
+
+def _deletion_would_remove(session: Path, protected: Path) -> bool:
+    """Whether ``rmtree(session)`` would remove ``protected``."""
+    try:
+        session_real = session.resolve()
+        protected_real = protected.resolve()
+    except OSError:
+        return True
+    try:
+        protected_real.relative_to(session_real)
+    except ValueError:
+        return False
+    return True
 
 
 def write_dataset_card(root, *, title: str) -> None:

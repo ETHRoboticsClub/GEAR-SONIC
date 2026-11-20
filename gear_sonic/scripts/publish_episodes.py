@@ -19,7 +19,10 @@ Usage::
 With no session directories, every subdirectory of ``--raw-root`` is scanned.
 Each new Enter-marked window is appended to the LeRobot v3 dataset, then the
 new episodes are segmented into the GR00T v2.1 dataset. Unless ``--no-push``,
-both trees are uploaded. Encoding is refused while ``g1_deploy_onnx`` is running.
+both trees are uploaded. After both uploads are marked, each raw session whose
+Enter-marked windows are all in the v3 ``meta/sources.jsonl`` is deleted. A
+skipped window keeps its session. Encoding is refused while ``g1_deploy_onnx``
+is running.
 """
 
 from __future__ import annotations
@@ -86,6 +89,7 @@ def _publish(argv, controller_running) -> int:
         mark_pushed,
         needs_push,
         push_dataset,
+        push_is_current,
         read_token,
         unconverted_episodes,
         window_already_appended,
@@ -140,6 +144,7 @@ def _publish(argv, controller_running) -> int:
     layout = load_layout()
     min_frames = max(1, int(round(float(args.fps) * float(args.min_segment_s))))
     added: list[dict] = []
+    skipped: dict[tuple[str, int, int], str] = {}
     for session in sessions:
         info = _session_info(session)
         reader = SessionReader(session)
@@ -167,6 +172,7 @@ def _publish(argv, controller_running) -> int:
                 build_rows=build_rows,
                 append_episode=append_episode,
                 append_source=append_source,
+                skipped=skipped,
             )
             if record is None:
                 continue
@@ -197,6 +203,7 @@ def _publish(argv, controller_running) -> int:
             write_dataset_card(root, title=repo_id)
 
     urls: list[tuple[str, str]] = []
+    pushed_this_run = False
     if not args.no_push:
         # A push that failed on an earlier run is retried here even when nothing new was added.
         due = [target for target in targets if needs_push(target[1], target[2])]
@@ -219,7 +226,23 @@ def _publish(argv, controller_running) -> int:
                 )
                 mark_pushed(root, repo_id, url)
                 urls.append((label, url))
+            pushed_this_run = True
     _print_summary(added, args.v3_root, args.groot_root, urls, pushed=not args.no_push)
+    both_marked = push_is_current(args.v3_root, args.repo_id) and push_is_current(
+        args.groot_root, args.groot_repo_id
+    )
+    if pushed_this_run and both_marked:
+        errors = _delete_consumed_sessions(
+            sessions,
+            v3_root=args.v3_root,
+            raw_root=args.raw_root,
+            groot_root=args.groot_root,
+            skipped=skipped,
+        )
+        if errors:
+            for message in errors:
+                print(f"error: {message}", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -239,6 +262,7 @@ def _append_window(
     build_rows,
     append_episode,
     append_source,
+    skipped,
 ):
     assembled = assemble_episode(
         session,
@@ -274,6 +298,7 @@ def _append_window(
                 f"skip {session.name} {window['start_ns']}-{window['stop_ns']}: {reason}",
                 flush=True,
             )
+            skipped[(str(session), int(window["start_ns"]), int(window["stop_ns"]))] = reason
             return None
         metadata = {
             "source_commit": info["source_commit"],
@@ -382,6 +407,46 @@ def _print_summary(added, v3_root, groot_root, urls, *, pushed: bool) -> None:
             print(f"{label}: {url}")
     elif added and not pushed:
         print("push: skipped")
+
+
+def _delete_consumed_sessions(sessions, *, v3_root, raw_root, groot_root, skipped) -> list[str]:
+    """Delete raw sessions whose windows are all in the v3 ledger.
+
+    A skipped window, or any Enter-marked window missing from ``sources.jsonl``,
+    keeps that session. The raw root and the dataset roots are never removed.
+    """
+    from gear_sonic.data.record.publish import (
+        delete_raw_session,
+        session_fully_consumed,
+        window_already_appended,
+    )
+    from gear_sonic.data.record.session_log import SessionReader
+    from gear_sonic.scripts.build_episodes import episode_windows
+
+    errors = []
+    for session in sessions:
+        reader = SessionReader(session)
+        windows = episode_windows(list(reader.iter_events()), end_ns=_last_stamp(reader))
+        if session_fully_consumed(v3_root, session.name, windows):
+            try:
+                delete_raw_session(session, raw_root, v3_root, groot_root)
+            except Exception as exc:
+                errors.append(f"push succeeded, but failed to delete raw session {session}: {exc}")
+            else:
+                print(f"deleted raw session {session}")
+            continue
+        for window in windows:
+            start_ns = int(window["start_ns"])
+            stop_ns = int(window["stop_ns"])
+            if window_already_appended(v3_root, session.name, start_ns, stop_ns):
+                continue
+            reason = skipped.get((str(session), start_ns, stop_ns))
+            if reason:
+                detail = f"was skipped ({reason})"
+            else:
+                detail = "is not in sources.jsonl"
+            print(f"keep raw session {session}: window {start_ns}-{stop_ns} {detail}")
+    return errors
 
 
 if __name__ == "__main__":
