@@ -91,6 +91,20 @@ class G1GripperInverseKinematicsSolver(Solver):
 
         return q_desired
 
+    def partial_close(self, finger: float, thumb: float) -> np.ndarray:
+        """Scale the index-pinch pose. Each amount is 0 (open) to 1 (closed).
+
+        ``finger`` curls the index and middle (joints 3-6). ``thumb`` swings
+        and curls the thumb (joints 0-2). The two groups move independently.
+        """
+        finger = float(np.clip(finger, 0.0, 1.0))
+        thumb = float(np.clip(thumb, 0.0, 1.0))
+        closed = self._get_index_close_q_desired()
+        q = np.zeros(7, dtype=np.float64)
+        q[:3] = thumb * closed[:3]
+        q[3:] = finger * closed[3:]
+        return q
+
     def _get_index_close_q_desired(self):
         q_desired = np.zeros(7)
 

@@ -384,28 +384,16 @@ def process_smpl_joints(body_pose, global_orient, transl):
     }
 
 
-def generate_finger_data(hand: str, trigger: float, grip: float) -> np.ndarray:
-    """
-    Generate finger position data from Pico controller button states.
+# Resting analog triggers sit a little above 0. Below this the hand stays open.
+HAND_AXIS_DEADZONE = 0.05
 
-    Args:
-        hand: "left" or "right"
-        trigger: Trigger button value (0-1)
-        grip: Grip button value (0-1)
 
-    Returns:
-        Array of shape [25, 4, 4] representing fingertip positions
-    """
-    fingertips = np.zeros([25, 4, 4])
-
-    thumb = 0
-    middle = 10
-    # Control thumb based on shoulder button state (index 4 is thumb tip)
-    fingertips[4 + thumb, 0, 3] = 1.0  # open thumb
-    if trigger > 0.5:
-        fingertips[4 + middle, 0, 3] = 1.0  # close middle
-
-    return fingertips
+def _hand_axis(value: float) -> float:
+    """Map a 0-1 controller axis to 0-1 with a deadzone, reaching 1 at full press."""
+    value = float(np.clip(value, 0.0, 1.0))
+    if value <= HAND_AXIS_DEADZONE:
+        return 0.0
+    return (value - HAND_AXIS_DEADZONE) / (1.0 - HAND_AXIS_DEADZONE)
 
 
 # Joystick deadzone threshold
@@ -487,6 +475,10 @@ def init_hand_ik_solvers():
         left_solver = G1GripperInverseKinematicsSolver(side="left")
         right_solver = G1GripperInverseKinematicsSolver(side="right")
         print("Hand IK solvers initialized")
+        print(
+            "Hands: index trigger closes the hand. "
+            "Grip squeeze brings the thumb in on its own. Release to open."
+        )
         return left_solver, right_solver
     print("Warning: Hand IK solvers not available")
     return None, None
@@ -559,16 +551,22 @@ def get_abxy_buttons(reader=None):
 def compute_hand_joints_from_inputs(
     left_solver, right_solver, left_trigger, left_grip, right_trigger, right_grip
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute left/right hand joints using IK solvers, or zeros if unavailable."""
-    if left_solver is not None and right_solver is not None:
-        left_finger_data = generate_finger_data("left", left_trigger, left_grip)
-        right_finger_data = generate_finger_data("right", right_trigger, right_grip)
-        left_hand_joints = left_solver({"position": left_finger_data})
-        right_hand_joints = right_solver({"position": right_finger_data})
-    else:
-        left_hand_joints = np.zeros((1, 7), dtype=np.float32)
-        right_hand_joints = np.zeros((1, 7), dtype=np.float32)
-    return left_hand_joints, right_hand_joints
+    """Map each controller to a Dex3 pinch.
+
+    The index trigger closes the fingers and the thumb together, in proportion
+    to the pull, so one trigger pull still grabs. The grip squeeze closes the
+    thumb on its own, or ahead of the fingers. Releasing both opens the hand.
+    """
+    if left_solver is None or right_solver is None:
+        return np.zeros((1, 7), dtype=np.float32), np.zeros((1, 7), dtype=np.float32)
+
+    def grasp(solver, trigger, grip):
+        finger = _hand_axis(trigger)
+        # The trigger already brings the thumb along. The grip can only add to it.
+        thumb = _hand_axis(max(float(trigger), float(grip)))
+        return solver.partial_close(finger, thumb).reshape(1, 7).astype(np.float32)
+
+    return grasp(left_solver, left_trigger, left_grip), grasp(right_solver, right_trigger, right_grip)
 
 
 def _quat_lerp_normalized(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray:
@@ -1622,8 +1620,7 @@ class PlannerStreamer:
                     vr_3pt_position = (vr_3pt_pose[:, :3].flatten()).tolist()
                     vr_3pt_orientation = vr_3pt_pose[:, 3:].flatten().tolist()
 
-                # Compute hand joints from trigger/grip inputs so operator can
-                # control hand open/close while in VR 3PT mode
+                # Trigger closes the hand; grip brings the thumb in on its own.
                 (
                     left_menu_button,
                     left_trigger,
