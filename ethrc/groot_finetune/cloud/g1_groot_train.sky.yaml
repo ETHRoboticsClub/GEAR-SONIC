@@ -1,0 +1,60 @@
+# Fine-tune GR00T N1.7 on a G1 recording from the Hugging Face Hub, on one cloud GPU
+# (club SkyPilot server, AWS). Launch it with cloud/train.sh, which also sets the
+# autostop. By hand, from ethrc/groot_finetune/:
+#
+#   export HF_TOKEN=hf_...
+#   sky launch -c gr00t-grasp-bottle-g1 cloud/g1_groot_train.sky.yaml --secret HF_TOKEN \
+#     --env DATASET=ETHRC/grasp_bottle_g1_gr00t --env MODEL_REPO=ETHRC/gr00t-g1-grasp-bottle -d
+#   sky autostop -y -i 30 gr00t-grasp-bottle-g1
+#
+# The workdir is ethrc/groot_finetune only (a few files): the machine clones NVIDIA's
+# Isaac-GR00T at the pinned revision itself. The run stays in ~/runs/<dataset name> on the
+# machine's disk; the result goes to MODEL_REPO. Launching again on the same cluster
+# resumes from the latest checkpoint.
+name: gr00t-g1-sonic
+
+workdir: .
+
+resources:
+  cpus: 8+
+  memory: 64+
+  # Dataset, base model (~6 GB), and two checkpoints with optimizer state.
+  disk_size: 250
+  # One L40S (48 GB) in any AWS region first: NVIDIA's fine-tuning minimum is a 40 GB GPU
+  # (Isaac-GR00T getting_started/hardware_recommendation.md). A single H100 as the
+  # fallback (about 3x the price).
+  ordered:
+  - {infra: aws, accelerators: L40S:1}
+  - {infra: aws/us-west-2, accelerators: H100:1}
+
+envs:
+  DATASET: ""
+  MODEL_REPO: ""
+  MAX_STEPS: 10000
+  BATCH_SIZE: 32
+  WANDB_PROJECT: ""
+  EXTRA_ARGS: ""
+
+secrets:
+  HF_TOKEN: null
+  WANDB_API_KEY: ""
+
+setup: |
+  set -euo pipefail
+  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+  bash ~/sky_workdir/setup_groot.sh ~/Isaac-GR00T
+
+run: |
+  set -euo pipefail
+  export PATH="$HOME/.local/bin:$PATH"
+  if [ -z "$DATASET" ] || [ -z "$MODEL_REPO" ]; then
+    echo "set --env DATASET=namespace/name_gr00t and --env MODEL_REPO=namespace/name" >&2
+    exit 2
+  fi
+  name="$(basename "$DATASET")"
+  args=(--dataset "$DATASET" --model-repo "$MODEL_REPO" --max-steps "$MAX_STEPS"
+        --batch-size "$BATCH_SIZE" --workdir "$HOME/runs/$name")
+  if [ -n "$WANDB_PROJECT" ]; then args+=(--wandb-project "$WANDB_PROJECT"); fi
+  cd ~/Isaac-GR00T
+  # shellcheck disable=SC2086  # EXTRA_ARGS holds several flags
+  uv run python ~/sky_workdir/train.py "${args[@]}" $EXTRA_ARGS

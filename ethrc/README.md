@@ -21,3 +21,9 @@ python ethrc/g1_sonic_bundle.py --urdf-sha256 <G1 model identity> --check
 
 The model identity comes from the controls repo's G1 description; regenerate
 when it changes.
+
+# Fine-tuning GR00T N1.7 on G1 recordings
+
+`groot_finetune/` takes a task recorded on the G1 (its `_gr00t` dataset on the Hub) to
+a fine-tuned GR00T N1.7 model, on the club's cloud or any 40 GB GPU:
+[`groot_finetune/README.md`](groot_finetune/README.md).
