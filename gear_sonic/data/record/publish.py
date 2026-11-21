@@ -247,7 +247,7 @@ def write_dataset_card(root, *, title: str) -> None:
         [
             f"# {title}",
             "",
-            "Robot: Unitree G1, PICO teleop, ZED left eye.",
+            "Robot: Unitree G1, PICO teleop, head camera as ego_view.",
             "",
             f"fps: {info.get('fps')}",
             f"tasks: {task_line}",

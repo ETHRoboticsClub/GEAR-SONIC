@@ -1,8 +1,14 @@
-"""Record ZMQ state, ZMQ tracking, and an optional ZED camera into a session log.
+"""Record ZMQ state, ZMQ tracking, and an optional head camera into a session log.
 
 Usage::
 
-    python gear_sonic/scripts/run_pico_session_recorder.py --task "pick up the cup"
+    python gear_sonic/scripts/run_pico_session_recorder.py --task "pick up the cup" --camera oakd
+
+``--camera oakd`` reads the OAK-D W in the crown mount: the device JPEG-encodes
+its color sensor (640x360, 30 fps by default) and the recorder logs those bytes
+as they are. ``--camera /dev/videoN`` reads a ZED over V4L2 and keeps its left
+eye, JPEG-encoded on the host. Both land in the same ``zed_left.*`` files, which
+``build_episodes.py`` reads whatever camera wrote them.
 
 Defaults: state port 5557, tracking port 5558, no camera, and a new directory
 under ``/home/unitree/datasets/raw/<UTC timestamp>``. Enter toggles
@@ -44,9 +50,10 @@ def capture_streams(writer, state_iter, tracking_iter, frames, stop) -> None:
 
     ``state_iter`` and ``tracking_iter`` yield ``(recv_ns, payload)``. The log
     stamp for both streams is that receive time. ``frames`` yields objects with
-    ``stamp_ns``, ``sequence``, ``yuyv``, and ``error``, or is None when the
-    camera is off. The camera thread only queues those objects. Another thread
-    converts YUYV with ``left_eye_rgb`` and ``cv2.imencode``.
+    ``stamp_ns``, ``sequence``, ``error``, and either ``jpeg`` (already encoded,
+    the OAK) or ``yuyv`` (the ZED), or is None when the camera is off. The camera
+    thread only queues those objects. Another thread logs JPEG bytes as they are,
+    or converts YUYV with ``left_eye_rgb`` and ``cv2.imencode``.
 
     Each iterator is read to completion, so a finite iterator makes this
     function return even when ``stop`` is never set. ``stop`` is checked between
@@ -199,7 +206,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--camera",
         default="",
-        help="V4L2 device for the ZED. Empty skips the camera (default: empty).",
+        help=(
+            "Head camera: 'oakd' (first OAK found, or 'oakd:<mxid>'), or a V4L2 device such as "
+            "/dev/video0 for a ZED. Empty skips the camera (default: empty)."
+        ),
+    )
+    parser.add_argument(
+        "--camera-size",
+        default="640x360",
+        help="OAK only: 640x360 (default) or 1280x720. About 115 and 400 MB per minute.",
+    )
+    parser.add_argument(
+        "--camera-quality",
+        type=int,
+        default=90,
+        help="OAK only: on-device JPEG quality, 1-100 (default: 90).",
     )
     parser.add_argument(
         "--root",
@@ -209,16 +230,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     root = Path(args.root) if args.root is not None else default_session_root()
+    camera = open_camera(args.camera, args.camera_size, args.camera_quality)
     stop = threading.Event()
-    writer = SessionWriter(root, queue_size=8)
     worker = None
     episode_state: dict = {"open": False}
+    try:
+        writer = SessionWriter(root, queue_size=8)
+    except BaseException:
+        _close_iterator(camera.frames)
+        raise
     try:
         settings = {
             "host": args.host,
             "state_port": args.state_port,
             "tracking_port": args.tracking_port,
             "camera": args.camera,
+            "camera_info": camera.info,
             "root": str(root),
         }
         write_session_json(
@@ -227,11 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             source_commit=read_source_commit(),
             settings=settings,
         )
-        frames = None
-        if args.camera:
-            from gear_sonic.data.record.zed_v4l2 import iter_frames
-
-            frames = iter_frames(args.camera)
+        frames = camera.frames
         worker = threading.Thread(
             target=capture_streams,
             args=(
@@ -253,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
         stop.set()
         if worker is not None:
             worker.join(timeout=1.0)
+        # An OAK blocked waiting for its next frame returns once the device closes.
+        _close_iterator(camera.frames)
         if episode_state.get("open"):
             writer.mark_event(
                 "episode_stop",
@@ -262,6 +287,40 @@ def main(argv: list[str] | None = None) -> int:
             episode_state["open"] = False
         writer.close()
     return 0
+
+
+class Camera:
+    """What ``main`` records from: ``frames`` (None when off) and ``info`` for session.json."""
+
+    def __init__(self, frames, info: dict) -> None:
+        self.frames = frames
+        self.info = info
+
+
+def open_camera(camera: str, size: str = "640x360", quality: int = 90) -> Camera:
+    """Open the camera ``--camera`` names, before anything is written.
+
+    ``oakd`` / ``oakd:<mxid>`` boots the OAK now, so a missing camera fails
+    the command at once. A V4L2 path is opened on the camera thread's first read,
+    as before.
+    """
+    if not camera:
+        return Camera(None, {"kind": "none"})
+    from gear_sonic.data.record import oak_mjpeg
+
+    if oak_mjpeg.is_oak(camera):
+        width, height = oak_mjpeg.parse_size(size)
+        capture = oak_mjpeg.OakCapture(
+            oak_mjpeg.parse_camera(camera), width=width, height=height, quality=quality
+        )
+        print(f"camera: {capture.info}", flush=True)
+        return Camera(capture, dict(capture.info))
+    from gear_sonic.data.record.zed_v4l2 import HEIGHT, WIDTH, iter_frames
+
+    return Camera(
+        iter_frames(camera),
+        {"kind": "zed_v4l2", "device": camera, "width": WIDTH // 2, "height": HEIGHT},
+    )
 
 
 def _pump_pairs(iterator, stop: threading.Event, append) -> None:
@@ -303,6 +362,11 @@ def _append_encoded(writer, frame) -> None:
     sequence = int(frame.sequence)
     if bool(frame.error):
         writer.append_jpeg(stamp_ns, sequence, b"", error=True)
+        return
+    jpeg = getattr(frame, "jpeg", None)
+    if jpeg is not None:
+        # Encoded on the camera: log the bytes the device sent.
+        writer.append_jpeg(stamp_ns, sequence, bytes(jpeg), error=not jpeg)
         return
     from gear_sonic.data.record.zed_v4l2 import HEIGHT, WIDTH, left_eye_rgb
 
