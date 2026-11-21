@@ -1,8 +1,8 @@
 # Recording teleop on the G1
 
-The whole chain, in order: power on, start teleop, record episodes, stop, export.
-Everything runs on the robot from one folder: `/home/unitree/GEAR-SONIC`, checked
-out on `main`. Do not `cd` to `/home/unitree/worktrees/gear-sonic-record/iface`.
+The whole chain, in order: power on, start teleop, record episodes, stop, export,
+then fine-tune GR00T on the result (section 7). Recording runs on the robot from one
+folder: `/home/unitree/GEAR-SONIC`, checked out on `main`. Do not `cd` to `/home/unitree/worktrees/gear-sonic-record/iface`.
 Do not leave uncommitted changes in `/home/unitree/GEAR-SONIC`: what is not on
 `main` is lost the day the robot is reinstalled. If the robot itself is lost or
 wiped, "Rebuilding the setup" at the end lists what to reinstall.
@@ -199,6 +199,64 @@ episodes added: 5
 v3 repo: https://huggingface.co/datasets/ETHRC/grasp_bottle_g1
 groot repo: https://huggingface.co/datasets/ETHRC/grasp_bottle_g1_gr00t
 ```
+
+## 7. Fine-tune GR00T N1.7 on the task
+
+This step runs on a GPU in the cloud, launched from your own computer, not from the
+robot. It reads the `_gr00t` dataset from section 6 and writes a private model repository.
+The full reference is `ethrc/groot_finetune/README.md`.
+
+**Once per person:**
+
+1. Hugging Face: sign in and accept the terms of
+   [nvidia/Cosmos-Reason2-2B](https://huggingface.co/nvidia/Cosmos-Reason2-2B). GR00T
+   N1.7 is built on it; until you accept, the run stops at its checks. Then run
+   `hf auth login` with a token that reads the `ETHRC` datasets and can write the model
+   repository.
+2. SkyPilot, the club's cloud: `uv tool install 'skypilot[aws]'`, then
+   `sky api login -e https://sky.ethrobotics.ch`. The launcher refuses to start
+   without this login.
+3. Clone this repository on your computer (`git clone https://github.com/ETHRoboticsClub/GEAR-SONIC.git`).
+
+**Each fine-tune**, from the repository root on your computer:
+
+```bash
+ethrc/groot_finetune/cloud/train.sh ETHRC/grasp_bottle_g1_gr00t ETHRC/gr00t-g1-grasp-bottle
+sky logs gr00t-grasp-bottle-g1-gr00t      # follow the run
+```
+
+- The first argument is the `_gr00t` dataset. The success labels are read from its
+  twin without the suffix (`ETHRC/grasp_bottle_g1`).
+- By default the takes answered `n` are left out. Add `--episodes successful` to keep
+  only the `y` takes, or `--episodes all` to keep every take.
+- The second argument is the model repository. It is created private.
+- It runs on one L40S on AWS, or on an H100 if no L40S is available (about three times
+  the price). The machine stops 30 minutes after the job ends. Its disk, with the
+  checkpoints, is billed until `sky down -y <cluster>`. Agree on the budget before
+  launching.
+- Defaults are 10000 steps, global batch 32, learning rate 1e-4. Add flags after the
+  two names, for example `--max-steps 20000`.
+- Interrupted? Run the same command again: it resumes from the latest checkpoint.
+
+**Check a dataset without a GPU.** On any machine with Isaac-GR00T installed
+(`ethrc/groot_finetune/setup_groot.sh`), `--prepare-only` checks the dataset and selects
+the episodes. It then computes the statistics and loads training steps with GR00T's
+loader:
+
+```bash
+cd ~/Isaac-GR00T && uv run python <GEAR-SONIC>/ethrc/groot_finetune/train.py \
+    --dataset ETHRC/grasp_bottle_g1_gr00t --prepare-only
+```
+
+On 2026-11-21 this check passed on `ETHRC/grasp_bottle_g1_gr00t`: 4 of 5 takes were
+kept (the failed one was dropped) and it found 5057 training steps. No GPU fine-tune has
+run yet. Five takes are enough to test the pipeline, not to train a useful policy; plan
+on several dozen successful takes per task.
+
+**Use the model.** The model card on the Hub gives the command that serves it with
+Isaac-GR00T (`run_gr00t_server.py`, embodiment `UNITREE_G1_SONIC`). Driving the robot
+with it means feeding its motion tokens to the SONIC decoder in place of the PICO. That
+bridge is not written yet.
 
 ## What is recorded
 
