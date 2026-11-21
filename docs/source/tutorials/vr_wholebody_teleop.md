@@ -1,5 +1,10 @@
 # PICO VR Whole-body Teleop 
 
+For the ETHRC fork's tracking input, the robot API path, and the exact policy
+inputs and outputs, see [Pico Tracking to G1 Motor Commands](../references/pico_to_robot_pipeline.md).
+The current server requires ETHRC's tracking relay; the standalone C++
+deployment below does not supply that relay by itself.
+
 Full whole-body teleoperation using PICO VR headset and controllers. To teleop, use the option  `--input-type zmq_manager` during deployment. The `zmq_manager` input type switches between a **planner mode** (locomotion commands via ZMQ) and a **streamed motion mode** (full-body SMPL poses from PICO).
 
 ## SONIC Low Latency

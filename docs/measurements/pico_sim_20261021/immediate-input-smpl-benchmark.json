@@ -1,0 +1,10 @@
+{
+  "kind": "warm CPU replay benchmark of recorded PICO body poses; excludes transport and policy execution",
+  "samples": 500,
+  "torch_threads": 12,
+  "smpl_compute_ms": {
+    "p50": 1.939509,
+    "p95": 1.9596065999999999,
+    "max": 2.012766
+  }
+}

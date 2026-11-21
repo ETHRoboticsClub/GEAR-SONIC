@@ -6,6 +6,8 @@
 #include <mutex>
 #include <sstream>
 #include <array>
+#include <cstdint>
+#include <map>
 #include <nlohmann/json.hpp>
 #include "PXREARobotSDK.h"
 
@@ -65,6 +67,19 @@ std::mutex leftHandMutex;
 std::mutex rightHandMutex;
 std::mutex bodyMutex;  // Mutex for body tracking data
 std::mutex motionMutex;
+
+// Receipt counters distinguish a stationary tracked device from cached values
+// whose device section is no longer arriving. Protected by each device's mutex.
+uint64_t LeftUpdateSequence = 0;
+uint64_t RightUpdateSequence = 0;
+uint64_t HeadUpdateSequence = 0;
+uint64_t BodyUpdateSequence = 0;
+
+std::map<std::string, uint64_t> getInputUpdateSequences() {
+    std::scoped_lock lock(leftMutex, rightMutex, headsetPoseMutex, bodyMutex);
+    return {{"left", LeftUpdateSequence}, {"right", RightUpdateSequence},
+            {"head", HeadUpdateSequence}, {"body", BodyUpdateSequence}};
+}
 
 
 
@@ -130,6 +145,7 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                         LeftAxisClick = left["axisClick"].get<bool>();
                         LeftPrimaryButton = left["primaryButton"].get<bool>();
                         LeftSecondaryButton = left["secondaryButton"].get<bool>();
+                        ++LeftUpdateSequence;
                     }
                 }
                 if (value["Controller"].contains("right")) {
@@ -145,6 +161,7 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                         RightAxisClick = right["axisClick"].get<bool>();
                         RightPrimaryButton = right["primaryButton"].get<bool>();
                         RightSecondaryButton = right["secondaryButton"].get<bool>();
+                        ++RightUpdateSequence;
                     }
                 }
                 if (value.contains("Head")) {
@@ -152,6 +169,7 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                     {
                         std::lock_guard<std::mutex> lock(headsetPoseMutex);
                         HeadsetPose = stringToPoseArray(headset["pose"].get<std::string>());
+                        ++HeadUpdateSequence;
                     }
                 }
                 if (value.contains("timeStampNs")) {
@@ -220,6 +238,7 @@ void OnPXREAClientCallback(void* context, PXREAClientCallbackType type, int stat
                             }
                             
                             BodyDataAvailable = true;
+                            if (jointCount == 24) ++BodyUpdateSequence;
                         }
                     }
                 }
@@ -516,6 +535,8 @@ PYBIND11_MODULE(xrobotoolkit_sdk, m) {
     m.def("get_Y_button", &getLeftSecondaryButton, "Get the left secondary button state.");
     m.def("get_B_button", &getRightSecondaryButton, "Get the right secondary button state.");
     m.def("get_time_stamp_ns", &getTimeStampNs, "Get the timestamp in nanoseconds.");
+    m.def("get_input_update_sequences", &getInputUpdateSequences,
+          "Per-device receipt counters (head, left, right, body); zero means never received.");
     m.def("get_left_hand_tracking_state", &getLeftHandTrackingState, "Get the left hand state.");
     m.def("get_right_hand_tracking_state", &getRightHandTrackingState, "Get the right hand state.");
     m.def("get_left_hand_is_active", &getLeftHandIsActive, "Get the left hand tracking quality (0 = low, 1 = high).");

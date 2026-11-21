@@ -1,0 +1,50 @@
+{
+  "seconds": 60.006643445998634,
+  "rates_hz": {
+    "manager_state": 73.4,
+    "tracking": 77.1,
+    "pose": 49.9,
+    "g1_debug": 50.0,
+    "robot_config": 0.5
+  },
+  "modes": {
+    "[1]": 4406
+  },
+  "tracking": {
+    "(True, True, True, True)": 4627
+  },
+  "changed_rates_hz": {
+    "head": 72.0,
+    "left_controller": 72.0,
+    "right_controller": 72.0,
+    "body": 72.0
+  },
+  "changed_gap_ms_p50_p95_max": {
+    "head": [
+      13.87,
+      18.54,
+      56.73
+    ],
+    "left_controller": [
+      13.87,
+      18.54,
+      56.73
+    ],
+    "right_controller": [
+      13.87,
+      18.54,
+      56.73
+    ],
+    "body": [
+      13.87,
+      18.54,
+      56.73
+    ]
+  },
+  "relay_age_ms_p50_p95_max": [
+    0.54,
+    1.21,
+    27.77
+  ],
+  "sim_realtime_factor": 0.9554714984285195
+}

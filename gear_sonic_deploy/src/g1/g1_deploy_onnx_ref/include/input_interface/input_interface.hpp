@@ -38,6 +38,7 @@
 #include "../robot_parameters.hpp"   // For HeadingState, OperatorState
 #include "../motion_data_reader.hpp" // For MotionDataReader, MotionSequence
 #include "../math_utils.hpp"         // For float_to_double
+#include "../input_wakeup.hpp"
 #include "../localmotion_kplanner.hpp" // For PlannerState, MovementState
 
 /**
@@ -62,6 +63,20 @@ public:
 
     /// Virtual destructor ensures correct cleanup of derived classes.
     virtual ~InputInterface() = default;
+
+    // Subscriber callbacks may already be running when this is configured.
+    virtual void SetInputWakeup(std::shared_ptr<InputWakeup> wakeup) {
+        std::atomic_store(&input_wakeup_, std::move(wakeup));
+    }
+
+    void NotifyInputReady() const {
+        if (auto wakeup = std::atomic_load(&input_wakeup_)) wakeup->Notify();
+    }
+
+private:
+    std::shared_ptr<InputWakeup> input_wakeup_;
+
+public:
 
     // ------------------------------------------------------------------
     // Pure-virtual interface

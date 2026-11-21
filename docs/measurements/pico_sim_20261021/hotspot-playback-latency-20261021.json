@@ -1,0 +1,25 @@
+{
+  "method": "Match unique joint reference vectors from pose packets to body_q_target in controller feedback; excludes initial capture boundary. These are reference ages, not physical or visible movement latency. Encoder reads current reference plus three later frames.",
+  "matched_feedback": 2991,
+  "feedback_total": 3002,
+  "manager_receipt_to_publication_ms": {
+    "p50": 10.017,
+    "p95": 13.886,
+    "max": 27.496
+  },
+  "pose_publication_to_current_reference_ms": {
+    "p50": 138.45,
+    "p95": 150.946,
+    "max": 163.254
+  },
+  "manager_receipt_to_current_reference_ms": {
+    "p50": 148.554,
+    "p95": 161.739,
+    "max": 173.805
+  },
+  "latest_published_minus_reference_frames": {
+    "p50": 6.0,
+    "p95": 7.0,
+    "max": 7.0
+  }
+}

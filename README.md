@@ -215,6 +215,8 @@ SONIC supports real-time whole-body teleoperation via PICO VR headset, enabling 
 
 In this ETHRC fork, `gear_sonic/scripts/pico_manager_thread_server.py` reads no device: it takes the operator's tracking from the ETHRC controls repo's teleop module (XRoboToolkit or Isaac Teleop backends), relayed on its feedback socket (`gear_sonic/utils/teleop/input_readers.py`). See `docs/teleop.md` in ETHRC-Humanoid-Controls.
 
+**ETHRC G1: teleoperate and record datasets onboard.** Power on, PICO teleop with the Dex3 hands, OAK-D W head camera recording, and export to LeRobot v3 / GR00T v2.1 on Hugging Face, all on the robot: [`docs/g1_teleop_recording.md`](docs/g1_teleop_recording.md). It ends with how to rebuild the whole setup on a wiped robot. Teleop launcher details: [`docs/pico_real_g1.md`](docs/pico_real_g1.md).
+
 <div align="center">
 <table>
 <tr>
