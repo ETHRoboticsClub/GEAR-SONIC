@@ -211,6 +211,7 @@ show_usage() {
     echo "  --input-type TYPE       Set the input type (default: zmq_manager)"
     echo "  --output-type TYPE      Set the output type (default: ros2)"
     echo "  --zmq-host HOST         Set the ZMQ host (default: localhost)"
+    echo "  --zmq-out-port PORT     Set the ZMQ feedback/output port (default: 5557)"
     echo "  --motor-kp-scale SPEC   Scale Kp for hardware motor indices/ranges"
     echo "  --motor-kd-scale SPEC   Scale Kd for hardware motor indices/ranges"
     echo ""
@@ -244,6 +245,7 @@ MOTION_DATA_DEFAULT="reference/example/"
 INPUT_TYPE_DEFAULT="manager"
 OUTPUT_TYPE_DEFAULT="all"
 ZMQ_HOST_DEFAULT="localhost"
+ZMQ_OUT_PORT_DEFAULT="5557"
 
 # Initialize with defaults (will be set after parsing)
 CHECKPOINT="$CHECKPOINT_DEFAULT"
@@ -253,6 +255,7 @@ MOTION_DATA="$MOTION_DATA_DEFAULT"
 INPUT_TYPE="$INPUT_TYPE_DEFAULT"
 OUTPUT_TYPE="$OUTPUT_TYPE_DEFAULT"
 ZMQ_HOST="$ZMQ_HOST_DEFAULT"
+ZMQ_OUT_PORT="$ZMQ_OUT_PORT_DEFAULT"
 MOTOR_KP_SCALES=()
 MOTOR_KD_SCALES=()
 
@@ -317,6 +320,14 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ZMQ_HOST="$2"
+            shift 2
+            ;;
+        --zmq-out-port)
+            if [[ ! "${2:-}" =~ ^[1-9][0-9]{0,4}$ ]] || (( $2 > 65535 )); then
+                echo -e "${RED}Error: --zmq-out-port requires a port between 1 and 65535${NC}" >&2
+                exit 1
+            fi
+            ZMQ_OUT_PORT="$2"
             shift 2
             ;;
         --motor-kp-scale)
@@ -541,6 +552,7 @@ echo -e "  Planner:            ${GREEN}$PLANNER${NC}"
 echo -e "  Input Type:         ${GREEN}$INPUT_TYPE${NC}"
 echo -e "  Output Type:        ${GREEN}$OUTPUT_TYPE${NC}"
 echo -e "  ZMQ Host:           ${GREEN}$ZMQ_HOST${NC}"
+echo -e "  ZMQ Output Port:    ${GREEN}$ZMQ_OUT_PORT${NC}"
 if (( ${#EXTRA_ARGS[@]} > 0 )); then
 printf -v EXTRA_ARGS_DISPLAY ' %q' "${EXTRA_ARGS[@]}"
 echo -e "  Extra Args:         ${GREEN}${EXTRA_ARGS_DISPLAY# }${NC}"
@@ -556,7 +568,8 @@ echo -e "${BLUE}    --encoder-file $CHECKPOINT_ENCODER \\${NC}"
 echo -e "${BLUE}    --planner-file $PLANNER \\${NC}"
 echo -e "${BLUE}    --input-type $INPUT_TYPE \\${NC}"
 echo -e "${BLUE}    --output-type $OUTPUT_TYPE \\${NC}"
-echo -e "${BLUE}    --zmq-host $ZMQ_HOST${NC}"
+echo -e "${BLUE}    --zmq-host $ZMQ_HOST \\${NC}"
+echo -e "${BLUE}    --zmq-out-port $ZMQ_OUT_PORT${NC}"
 if (( ${#EXTRA_ARGS[@]} > 0 )); then
 echo -e "${BLUE}    ${EXTRA_ARGS_DISPLAY# }${NC}"
 fi
@@ -585,6 +598,7 @@ if [[ "$confirm" =~ ^[Yy]$ ]] || [[ -z "$confirm" ]]; then
         --input-type "$INPUT_TYPE" \
         --output-type "$OUTPUT_TYPE" \
         --zmq-host "$ZMQ_HOST" \
+        --zmq-out-port "$ZMQ_OUT_PORT" \
         "${EXTRA_ARGS[@]}"
 else
     echo ""

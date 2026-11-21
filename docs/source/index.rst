@@ -132,6 +132,7 @@ Documentation
    references/conventions
    references/training_code
    references/deployment_code
+   references/pico_to_robot_pipeline
    references/observation_config
    references/motion_reference
    references/planner_onnx

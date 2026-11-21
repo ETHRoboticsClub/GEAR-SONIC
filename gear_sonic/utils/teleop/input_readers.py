@@ -29,6 +29,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import zmq
 
+from gear_sonic.utils.teleop.tracking_timing import PicoTimingMonitor
+
 logger = logging.getLogger(__name__)
 
 TRACKING_TOPIC = b"tracking"
@@ -186,7 +188,8 @@ class TrackingReader:
     """
 
     def __init__(
-        self, host: str | None = None, port: int | None = None, context=None, clock=time.monotonic_ns
+        self, host: str | None = None, port: int | None = None, context=None, clock=time.monotonic_ns,
+        *, local_pico_timing: bool = False,
     ):
         self._address = None if host is None else f"tcp://{host}:{port}"
         self._context = context
@@ -202,7 +205,17 @@ class TrackingReader:
         self._three_point: tuple[str, Any] | None = None
         self._input_timestamp_ns = 0
         self._last_body_ns: int | None = None
+        self._last_body_update_sequence: int | None = None
         self._fps_ema = 0.0
+        # Opt in only for pico_sim_bridge on this PC: remote monotonic clocks
+        # cannot be subtracted to measure transport delay.
+        self._timing = PicoTimingMonitor() if local_pico_timing else None
+
+    def warn_if_tracking_delayed(self, enabled: bool = True) -> None:
+        with self._lock:
+            message = self._timing.warning(self._clock(), enabled) if self._timing else None
+        if message:
+            logger.warning(message)
 
     def start(self) -> None:
         if self._address is None or self._thread is not None:
@@ -320,7 +333,12 @@ class TrackingReader:
             three_point = None
 
         sample = None
-        if body is not None:
+        # The local bridge can publish head/controller changes and heartbeats
+        # with a cached body. Wake button consumers, but map each body only once.
+        body_sequence = frame.get("body_update_sequence")
+        fresh_body = body_sequence is None or body_sequence != self._last_body_update_sequence
+        if body is not None and fresh_body:
+            self._last_body_update_sequence = body_sequence
             dt = 0.0 if self._last_body_ns is None else (sample_ns - self._last_body_ns) * 1e-9
             if dt > 0.0:
                 self._fps_ema = 1.0 / dt if self._fps_ema == 0.0 else 0.9 * self._fps_ema + 0.1 / dt
@@ -335,6 +353,8 @@ class TrackingReader:
             }
 
         with self._lock:
+            if self._timing is not None:
+                self._timing.observe(frame, now_ns)
             if tracking != self._tracking:
                 logger.info("[TrackingReader] Tracking: %s", tracking)
             self._received_ns = now_ns

@@ -1,0 +1,31 @@
+{
+  "sample_count": 2990,
+  "timings": {
+    "reference_publication_to_complete_window_ms": {
+      "p50": 56.829,
+      "p95": 67.669,
+      "max": 79.262
+    },
+    "complete_window_publication_to_feedback_ms": {
+      "p50": 20.117,
+      "p95": 40.766,
+      "max": 77.213
+    },
+    "newest_encoder_sample_receipt_to_feedback_ms": {
+      "p50": 28.876,
+      "p95": 49.383,
+      "max": 86.341
+    },
+    "newest_encoder_sample_receipt_to_publication_ms": {
+      "p50": 9.126,
+      "p95": 11.536,
+      "max": 20.752
+    },
+    "oldest_reference_receipt_to_feedback_ms": {
+      "p50": 86.716,
+      "p95": 107.795,
+      "max": 142.457
+    }
+  },
+  "note": "Controller feedback is published after action computation. This associates the newest frame in the four-frame encoder window with that control tick; it does not establish how strongly that frame changes the action, DDS delivery, or physical/display response."
+}
