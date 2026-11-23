@@ -2,7 +2,7 @@
 # SMPL origin: gear_sonic/data/human/human_joints_info.pkl; sha256 4de0bae69caf31e8829a2d3e8adecd887f29115af60a0b8d59237dfbfea1c975
 schema: sonic/v1
 robot_identity:
-  urdf_sha256: 715a803c14d04cbfb52a68c894fd7c2f02170d7e466bb1217e4b02b77ae9ce27
+  urdf_sha256: 3b364a572fd91a9b282716f09ec02d3da2a50ca8ab834179f6664baa8cd0f009
 source:
   repository: hf:nvidia/GEAR-SONIC
   revision: 6733128a3d8a523b1418b06bca3cdf61c8b0987f

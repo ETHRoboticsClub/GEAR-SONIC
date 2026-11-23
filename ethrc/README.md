@@ -29,3 +29,9 @@ poses are pelvis-relative, so its observation adapter restores this origin for
 each frame. Both release variants require the field. Update Controls' manifest
 revision and digest locks together with the consumer and reinstall the bundles;
 older installed manifests are rejected with a reinstall diagnostic.
+
+# Fine-tuning GR00T N1.7 on G1 recordings
+
+`groot_finetune/` takes a task recorded on the G1 (its `_gr00t` dataset on the Hub) to
+a fine-tuned GR00T N1.7 model, on the club's cloud or any 40 GB GPU:
+[`groot_finetune/README.md`](groot_finetune/README.md).

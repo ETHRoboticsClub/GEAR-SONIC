@@ -8,7 +8,9 @@ Enable head/controller sending and calibrated full-body tracking.
 ```bash
 ssh unitree_g1
 cd ~/GEAR-SONIC
-# Needed after a reboot if the ETHRC service has restarted:
+# Only if the club stack is installed as a service and running (it was not on
+# 2026-11-21); otherwise stop its containers with `just down` in
+# ~/ETHRC-Humanoid-Controls:
 sudo systemctl stop ethrc-controls.service
 bash install_scripts/run_pico_real.sh check
 bash install_scripts/run_pico_real.sh start

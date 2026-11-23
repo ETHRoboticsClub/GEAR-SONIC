@@ -1,0 +1,240 @@
+{
+  "joint_names": [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "left_hand_index_0_joint",
+    "left_hand_index_1_joint",
+    "left_hand_middle_0_joint",
+    "left_hand_middle_1_joint",
+    "left_hand_thumb_0_joint",
+    "left_hand_thumb_1_joint",
+    "left_hand_thumb_2_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+    "right_hand_index_0_joint",
+    "right_hand_index_1_joint",
+    "right_hand_middle_0_joint",
+    "right_hand_middle_1_joint",
+    "right_hand_thumb_0_joint",
+    "right_hand_thumb_1_joint",
+    "right_hand_thumb_2_joint"
+  ],
+  "state_dim": 43,
+  "index_convention": "groups.start is inclusive and groups.end is exclusive. names == joint_names[start:end] == observation.state[start:end].",
+  "groups": {
+    "left_leg": {
+      "start": 0,
+      "end": 6,
+      "names": [
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint"
+      ]
+    },
+    "right_leg": {
+      "start": 6,
+      "end": 12,
+      "names": [
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint"
+      ]
+    },
+    "waist": {
+      "start": 12,
+      "end": 15,
+      "names": [
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint"
+      ]
+    },
+    "left_arm": {
+      "start": 15,
+      "end": 22,
+      "names": [
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint"
+      ]
+    },
+    "right_arm": {
+      "start": 29,
+      "end": 36,
+      "names": [
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint"
+      ]
+    },
+    "left_hand": {
+      "start": 22,
+      "end": 29,
+      "names": [
+        "left_hand_index_0_joint",
+        "left_hand_index_1_joint",
+        "left_hand_middle_0_joint",
+        "left_hand_middle_1_joint",
+        "left_hand_thumb_0_joint",
+        "left_hand_thumb_1_joint",
+        "left_hand_thumb_2_joint"
+      ]
+    },
+    "right_hand": {
+      "start": 36,
+      "end": 43,
+      "names": [
+        "right_hand_index_0_joint",
+        "right_hand_index_1_joint",
+        "right_hand_middle_0_joint",
+        "right_hand_middle_1_joint",
+        "right_hand_thumb_0_joint",
+        "right_hand_thumb_1_joint",
+        "right_hand_thumb_2_joint"
+      ]
+    }
+  },
+  "body_joint_names": [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint"
+  ],
+  "body_joint_names_source": "The 29 MuJoCo body joints. g1_29dof_with_hand.xml (floating base and hand joints removed) matches G1SupplementalInfo.body_actuated_joints and also matches joint_names with both hand groups removed. This is g1_debug body_q / body_dq / last_action order (left leg, right leg, waist, left arm, right arm). It is not one observation.state slice: the left hand sits between the arms.",
+  "hand_actuator_joint_names": {
+    "left": [
+      "left_hand_thumb_0_joint",
+      "left_hand_thumb_1_joint",
+      "left_hand_thumb_2_joint",
+      "left_hand_index_0_joint",
+      "left_hand_index_1_joint",
+      "left_hand_middle_0_joint",
+      "left_hand_middle_1_joint"
+    ],
+    "right": [
+      "right_hand_thumb_0_joint",
+      "right_hand_thumb_1_joint",
+      "right_hand_thumb_2_joint",
+      "right_hand_index_0_joint",
+      "right_hand_index_1_joint",
+      "right_hand_middle_0_joint",
+      "right_hand_middle_1_joint"
+    ],
+    "note": "g1_debug left_hand_q / left_hand_dq / last_left_hand_action (and the right-hand keys) follow this supplemental actuated order, which is the order get_configuration_from_actuated_joints scatters into q. motor_0..6 on the hand velocity and hand action columns use this order. groups.left_hand.names / groups.right_hand.names are observation.state order and differ: pinocchio places index, then middle, then thumb."
+  },
+  "unassigned": [],
+  "unassigned_note": "Empty: every joint in joint_names is an actuated joint in exactly one of the seven groups. Fixed URDF joints and the floating base are absent from the pinocchio model (see omitted_joints), so they are not unassigned state columns.",
+  "omitted_joints": [
+    {
+      "name": "floating_base_joint",
+      "type": "floating"
+    },
+    {
+      "name": "pelvis_contour_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "logo_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "head_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "waist_support_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "imu_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "d435_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "mid360_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "left_hand_palm_joint",
+      "type": "fixed"
+    },
+    {
+      "name": "right_hand_palm_joint",
+      "type": "fixed"
+    }
+  ],
+  "omitted_joints_note": "Present in g1_29dof_with_hand.urdf but not in RobotModel.joint_names. Pinocchio's URDF loader drops fixed joints. instantiate_g1_robot_model does not add a floating base (set_floating_base stays false).",
+  "model": {
+    "factory": "gear_sonic.data.features_sonic_vla.get_g1_robot_model",
+    "waist_location": "lower_and_upper_body",
+    "high_elbow_pose": false,
+    "nq": 43
+  }
+}
