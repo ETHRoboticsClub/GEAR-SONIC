@@ -47,6 +47,8 @@ check() {
     test -x gear_sonic_deploy/target/release/g1_deploy_onnx_ref || { echo 'Build the controller first.' >&2; return 1; }
     "$CAMERA_PY" -c 'import depthai, zmq, msgpack, cv2; import gear_sonic.data.record.oak_mjpeg' ||
         { echo "The camera needs $CAMERA_PY with depthai, pyzmq, msgpack and opencv (the recorder venv)." >&2; return 1; }
+    "$TELEOP_PY" -c 'import cv2, tyro, pinocchio, msgpack_numpy' ||
+        { echo "The VLA client's packages are missing: bash install_scripts/run_vla_real.sh install" >&2; return 1; }
     "$TELEOP_PY" - <<'PY'
 import os
 import socket
@@ -93,6 +95,10 @@ while True:
     print("sent", key)
 PY
         ;;
+    install)
+        # The VLA client's packages into the teleop venv (pyproject extra vla_client).
+        uv pip install --python "$TELEOP_PY" -e "gear_sonic[vla_client]"
+        exit ;;
     check) check; exit ;;
     stop)
         if "${TMUX[@]}" has-session -t "$SESSION" 2>/dev/null; then
@@ -113,7 +119,7 @@ PY
         "${TMUX[@]}" list-panes -s -t "$SESSION" -F '#{window_name}: #{?pane_dead,EXITED,RUNNING} #{pane_dead_status}'
         exit ;;
     start) ;;
-    *) echo "Usage: GR00T_HOST=<server> $0 [check|start|attach|status|stop]"; exit ;;
+    *) echo "Usage: GR00T_HOST=<server> $0 [install|check|start|attach|status|stop]"; exit ;;
 esac
 
 if "${TMUX[@]}" has-session -t "$SESSION" 2>/dev/null; then

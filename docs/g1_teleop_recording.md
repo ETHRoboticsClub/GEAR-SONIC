@@ -283,6 +283,7 @@ cd /home/unitree/ETHRC-Humanoid-Controls && just down      # the club stack must
 cd /home/unitree/GEAR-SONIC
 export GR00T_HOST=<your computer's address on the robot's network>
 export VLA_PROMPT="grasp the bottle"       # the task text the model was trained with
+bash install_scripts/run_vla_real.sh install               # once: the client's packages in .venv_teleop
 bash install_scripts/run_vla_real.sh check                 # models, venvs, ports, the server
 bash install_scripts/run_vla_real.sh start                 # the controller stands the robot up
 bash install_scripts/run_vla_real.sh attach                # windows: camera controller vla keyboard
@@ -302,9 +303,11 @@ everything with `bash install_scripts/run_vla_real.sh stop`.
   jerky: check the computer's network first.
 - Measured on 2026-11-28: 119 ms per inference on the Spark; 290 ms median (410 ms p90)
   round trip from a laptop through the SSH forward, with an 89 KB test frame.
-- `check` fails with an import error when `.venv_teleop` lacks a package
-  `run_vla_inference.py` needs (it was set up for teleop): install it into that venv
-  (`uv pip install --python .venv_teleop/bin/python <package>`) and run `check` again.
+- `install` adds the client's packages (extra `vla_client`: OpenCV, tyro, pinocchio, ...)
+  to `.venv_teleop`; no Isaac-GR00T is installed on the robot.
+- With the PICO hotspot instead of the lab network, the computer is on `teleop-sim` and
+  `GR00T_HOST` is its `10.42.0.x` address. macOS may ask to accept incoming connections
+  for `ssh` the first time.
 
 ## What is recorded
 
