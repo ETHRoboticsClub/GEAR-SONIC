@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import queue
 import threading
 import time
+from typing import Literal
 
 import numpy as np
 import tyro
@@ -67,6 +68,14 @@ class InferenceConfig:
 
     port: int = 5550
     """The port of the Isaac-GR00T PolicyServer."""
+
+    image_codec: Literal["raw", "jpeg"] = "raw"
+    """How camera frames travel to the server: "raw" arrays for GR00T's own server, "jpeg"
+    for gear_sonic/scripts/serve_gr00t_jpeg.py (about 40 KB a frame instead of 690 KB, and
+    no Isaac-GR00T install on this machine)."""
+
+    jpeg_quality: int = 90
+    """JPEG quality of the frames with --image-codec jpeg."""
 
     # Control
     action_publish_rate: int = 50
@@ -367,10 +376,14 @@ def main(config: InferenceConfig):
 
     robot_model = instantiate_g1_robot_model(waist_location="lower_and_upper_body")
 
-    # Isaac-GR00T PolicyClient
-    from gr00t.policy.server_client import PolicyClient
+    if config.image_codec == "jpeg":
+        from gear_sonic.utils.inference.jpeg_policy import JpegPolicyClient
 
-    n1_policy = PolicyClient(host=config.host, port=config.port)
+        n1_policy = JpegPolicyClient(host=config.host, port=config.port, quality=config.jpeg_quality)
+    else:
+        from gr00t.policy.server_client import PolicyClient
+
+        n1_policy = PolicyClient(host=config.host, port=config.port)
 
     print(f"Connecting to PolicyServer at {config.host}:{config.port}...")
     if n1_policy.ping():
