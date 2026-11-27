@@ -97,7 +97,8 @@ PY
         ;;
     install)
         # The VLA client's packages into the teleop venv (pyproject extra vla_client).
-        uv pip install --python "$TELEOP_PY" -e "gear_sonic[vla_client]"
+        uv_bin="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$uv_bin" pip install --python "$TELEOP_PY" -e "gear_sonic[vla_client]"
         exit ;;
     check) check; exit ;;
     stop)
