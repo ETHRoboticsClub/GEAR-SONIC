@@ -1,0 +1,56 @@
+# Serve a fine-tuned GR00T N1.7 (UNITREE_G1_SONIC) to the G1 from one of the club's DGX
+# Sparks (GB10), with JPEG camera frames (gear_sonic/scripts/serve_gr00t_jpeg.py). Launch it
+# with cloud/serve.sh, from the repository root. The machine installs NVIDIA's Isaac-GR00T at
+# the training revision with its own Spark installer (CUDA 13, Python 3.12) in NVIDIA's CUDA
+# image, downloads MODEL_REPO and serves it on PORT inside the cluster; cloud/serve.sh says
+# how to reach it.
+name: gr00t-serve
+
+resources:
+  infra: ssh/spark
+  accelerators: GB10:1
+  cpus: 8+
+  memory: 32+
+  image_id: docker:nvidia/cuda:13.0.0-devel-ubuntu24.04
+  ports: 5550
+
+envs:
+  MODEL_REPO: ""
+  GROOT_REVISION: ""
+  PORT: 5550
+
+secrets:
+  HF_TOKEN: null
+
+file_mounts:
+  ~/vla/gear_sonic/scripts/serve_gr00t_jpeg.py: gear_sonic/scripts/serve_gr00t_jpeg.py
+  ~/vla/gear_sonic/utils/inference/jpeg_policy.py: gear_sonic/utils/inference/jpeg_policy.py
+  ~/vla/gear_sonic/tests/inference/test_jpeg_policy.py: gear_sonic/tests/inference/test_jpeg_policy.py
+
+setup: |
+  set -euxo pipefail
+  SUDO=""; [ "$(id -u)" -eq 0 ] || SUDO=sudo
+  export DEBIAN_FRONTEND=noninteractive
+  $SUDO apt-get update -qq
+  $SUDO apt-get install -y -qq --no-install-recommends git git-lfs curl ca-certificates python3 python3-venv ffmpeg
+  if [ ! -d ~/Isaac-GR00T/.git ]; then git clone -q https://github.com/NVIDIA/Isaac-GR00T.git ~/Isaac-GR00T; fi
+  cd ~/Isaac-GR00T
+  git -c advice.detachedHead=false checkout -q "$GROOT_REVISION"
+  git lfs install --local
+  git lfs pull --include "scripts/deployment/spark/wheels/*.whl"
+  bash scripts/deployment/spark/install_deps.sh
+  source .venv/bin/activate
+  # NVIDIA's activation script runs commands that fail harmlessly under -eu.
+  set +eu; source scripts/activate_spark.sh; set -eu
+  python -c "import gr00t, torch; assert torch.cuda.is_available(); print('gr00t ok, torch', torch.__version__)"
+  python -c "import os; from huggingface_hub import snapshot_download; snapshot_download(os.environ['MODEL_REPO'], local_dir=os.path.expanduser('~/model'), token=os.environ['HF_TOKEN'])"
+
+run: |
+  set -euo pipefail
+  cd ~/Isaac-GR00T
+  source .venv/bin/activate
+  set +eu; source scripts/activate_spark.sh; set -eu
+  # The JPEG codec against GR00T's own serializer, in this environment.
+  (cd ~/vla && python -m pytest -q -p no:cacheprovider gear_sonic/tests/inference/test_jpeg_policy.py)
+  exec python ~/vla/gear_sonic/scripts/serve_gr00t_jpeg.py --model-path ~/model \
+    --embodiment-tag UNITREE_G1_SONIC --device cuda:0 --host 0.0.0.0 --port "$PORT"

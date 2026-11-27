@@ -253,10 +253,58 @@ kept (the failed one was dropped) and it found 5057 training steps. No GPU fine-
 run yet. Five takes are enough to test the pipeline, not to train a useful policy; plan
 on several dozen successful takes per task.
 
-**Use the model.** The model card on the Hub gives the command that serves it with
-Isaac-GR00T (`run_gr00t_server.py`, embodiment `UNITREE_G1_SONIC`). Driving the robot
-with it means feeding its motion tokens to the SONIC decoder in place of the PICO. That
-bridge is not written yet.
+**Use the model.** Section 8 runs it on the G1.
+
+## 8. Run the fine-tuned model on the G1 (GR00T on a DGX Spark)
+
+The model runs off the robot: the G1's Orin NX shares its GPU with the SONIC controller
+and would take most of a second per inference. GR00T serves it from one of the club's DGX
+Sparks (about 120 ms per inference); on the robot, `run_vla_inference.py` sends it the head
+camera and the robot state and plays the 40 motion tokens it answers through the same
+low-latency SONIC controller as teleop. SONIC keeps balance; the model replaces the
+operator. Frames travel as JPEG (`--image-codec jpeg`, about 40-90 KB instead of 690 KB),
+which keeps a round trip within the 0.4 s between inferences on the lab's uplink.
+
+**On your computer** (SkyPilot logged in, as in section 7):
+
+```bash
+ethrc/groot_finetune/cloud/serve.sh NAMESPACE/MODEL      # about 20 min the first time
+sky logs gr00t-serve                                     # wait for "Server is ready"
+ssh -N -L 0.0.0.0:5550:localhost:5550 gr00t-serve        # keep it open: the robot reaches GR00T here
+```
+
+The server listens inside the club's cluster only; that SSH forwards it to your computer,
+which must be on the robot's network. `sky down -y gr00t-serve` frees the Spark afterwards.
+
+**On the robot**, from `/home/unitree/GEAR-SONIC`, with the robot supported (gantry):
+
+```bash
+cd /home/unitree/ETHRC-Humanoid-Controls && just down      # the club stack must not run
+cd /home/unitree/GEAR-SONIC
+export GR00T_HOST=<your computer's address on the robot's network>
+export VLA_PROMPT="grasp the bottle"       # the task text the model was trained with
+bash install_scripts/run_vla_real.sh check                 # models, venvs, ports, the server
+bash install_scripts/run_vla_real.sh start                 # the controller stands the robot up
+bash install_scripts/run_vla_real.sh attach                # windows: camera controller vla keyboard
+```
+
+Wait for `Init Done` in the `controller` window. In the `keyboard` window, each key then
+Enter: `k` starts the control loop (standing, PLANNER mode), `i` sends the initial pose and
+switches to POSE, `p` lets the policy run (it starts paused); `p` again pauses it, `k`
+stops the loop. `o` in the `controller` window is the emergency stop, as in teleop. Stop
+everything with `bash install_scripts/run_vla_real.sh stop`.
+
+- The camera is opened the recorder's way (`run_vla_camera.py`: the OAK's on-device JPEG
+  at 640x360, quality 90; `VLA_CAMERA=/dev/video0` for a ZED's left eye at the same size),
+  so the model sees what it was trained on. `composed_camera` opens the OAK at 640x480.
+- The `vla` window prints each inference's latency; the image age is printed by the
+  camera client. A round trip near or above 0.8 s (one action chunk) makes the motion
+  jerky: check the computer's network first.
+- Measured on 2026-11-28: 119 ms per inference on the Spark; 290 ms median (410 ms p90)
+  round trip from a laptop through the SSH forward, with an 89 KB test frame.
+- `check` fails with an import error when `.venv_teleop` lacks a package
+  `run_vla_inference.py` needs (it was set up for teleop): install it into that venv
+  (`uv pip install --python .venv_teleop/bin/python <package>`) and run `check` again.
 
 ## What is recorded
 
