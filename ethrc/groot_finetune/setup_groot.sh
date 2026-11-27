@@ -25,6 +25,15 @@ fi
 git -C "$target" -c advice.detachedHead=false checkout --quiet "$revision"
 echo "Isaac-GR00T $(git -C "$target" rev-parse --short HEAD) in $target"
 
+# The dGPU wheels are Git LFS files. Without git-lfs the clone holds pointer files in their
+# place, and `uv sync` fails reading them ("unable to locate the end of central directory
+# record"). uv reads every platform's wheel in the lock, so fetch all of them.
+if ! git lfs version > /dev/null 2>&1; then
+  sudo apt-get update -qq && sudo apt-get install -y -qq git-lfs
+fi
+git -C "$target" lfs install --local > /dev/null
+git -C "$target" lfs pull --include "scripts/deployment/dgpu/wheels/*.whl"
+
 bash "$target/scripts/deployment/dgpu/install_deps.sh"
 export PATH="$HOME/.local/bin:$PATH"
 (cd "$target" && uv run python -c "import gr00t, torch; print('gr00t ok, torch', torch.__version__, 'cuda', torch.cuda.is_available())")
