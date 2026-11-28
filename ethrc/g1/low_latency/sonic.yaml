@@ -210,12 +210,6 @@ networks:
         speed_m_s:
         - 0.8
         - 1.5
-      run:
-        code: 3
-        speed_m_s:
-        - 1.5
-        - 3.0
-        replan_period_s: 0.1
       squat:
         code: 4
         height_m:
